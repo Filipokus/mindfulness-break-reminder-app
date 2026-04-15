@@ -2,6 +2,10 @@ import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { motion, AnimatePresence } from 'motion/react';
 import confetti from 'canvas-confetti';
 import { ArrowLeft, Home, Settings, Plus, X, Coffee, Moon, Users, Briefcase, BookOpen, Palette, Clock, Pause, Play, Check, Download, FlaskConical, Flame } from 'lucide-react';
+import { onAuthStateChanged, signOut, type User } from 'firebase/auth';
+import { auth } from '../config/firebase';
+import { loadUserData, saveUserData } from './syncService';
+import AuthScreen from './AuthScreen';
 import { getAssignment, isExperimentEnabled } from './experiment';
 import type { ExperimentAssignment, ExperimentVariant } from './experiment';
 import { trackEvent, computeMetrics, exportResultsAsJSON, exportResultsAsCSV, downloadFile } from './analytics';
@@ -185,6 +189,8 @@ export default function App() {
     return savedLanguage === 'en' ? 'en' : 'sv';
   });
   const [currentScreen, setCurrentScreen] = useState<Screen>('onboarding1');
+  const [user, setUser] = useState<User | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
   const [profile, setProfile] = useState<UserProfile>(() => ({
     name: '',
     activity: '',
@@ -314,6 +320,52 @@ export default function App() {
     }
   }, []);
 
+  // Auth state listener — loads Firestore data on login
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      setUser(firebaseUser);
+      if (firebaseUser) {
+        try {
+          const cloudData = await loadUserData(firebaseUser.uid);
+          if (cloudData) {
+            setLanguage(cloudData.language ?? 'sv');
+            setProfile(cloudData.profile);
+            setBreaks(cloudData.breaks);
+            setHistory(cloudData.history ?? []);
+            setCompletedBreaks(cloudData.completedBreaks ?? []);
+            if (cloudData.profile?.name) {
+              setCurrentScreen('home');
+            }
+          } else {
+            // First login — try seeding from localStorage
+            const savedProfile = localStorage.getItem('profile');
+            const savedBreaks = localStorage.getItem('breaks');
+            const savedHistory = localStorage.getItem('history');
+            const savedCompletedBreaks = localStorage.getItem('completedBreaks');
+            if (savedProfile) setProfile(JSON.parse(savedProfile));
+            if (savedBreaks) setBreaks(JSON.parse(savedBreaks));
+            if (savedHistory) setHistory(JSON.parse(savedHistory));
+            if (savedCompletedBreaks) setCompletedBreaks(JSON.parse(savedCompletedBreaks));
+            const existingProfile = savedProfile ? JSON.parse(savedProfile) : null;
+            if (existingProfile?.name) setCurrentScreen('home');
+          }
+        } catch {
+          // Firestore unavailable — fall back to localStorage
+          const savedProfile = localStorage.getItem('profile');
+          const savedBreaks = localStorage.getItem('breaks');
+          const savedHistory = localStorage.getItem('history');
+          const savedCompletedBreaks = localStorage.getItem('completedBreaks');
+          if (savedProfile) setProfile(JSON.parse(savedProfile));
+          if (savedBreaks) setBreaks(JSON.parse(savedBreaks));
+          if (savedHistory) setHistory(JSON.parse(savedHistory));
+          if (savedCompletedBreaks) setCompletedBreaks(JSON.parse(savedCompletedBreaks));
+        }
+      }
+      setAuthLoading(false);
+    });
+    return unsubscribe;
+  }, []);
+
   useEffect(() => {
     localStorage.setItem('profile', JSON.stringify(profile));
   }, [profile]);
@@ -334,8 +386,36 @@ export default function App() {
     localStorage.setItem('completedBreaks', JSON.stringify(completedBreaks));
   }, [completedBreaks]);
 
+  // Debounced Firestore sync — writes to cloud 1.5s after last change
+  const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (!user) return;
+    if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
+    syncTimerRef.current = setTimeout(() => {
+      saveUserData(user.uid, { profile, breaks, history, completedBreaks, language }).catch(() => {});
+    }, 1500);
+    return () => {
+      if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
+    };
+  }, [user, profile, breaks, history, completedBreaks, language]);
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-[#F5F3EF] via-[#E8E4DC] to-[#D4CFC3] p-0 sm:px-6 sm:py-8 lg:px-8 lg:py-10">
+      {authLoading && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#F5F3EF]">
+          <div className="h-8 w-8 animate-spin rounded-full border-2 border-[#C5D4C0] border-t-transparent" />
+        </div>
+      )}
+      {!authLoading && !user && (
+        <div className="flex min-h-screen items-center justify-center p-0 sm:px-6 sm:py-8">
+          <div className="h-[100dvh] w-full max-w-[420px] overflow-hidden bg-[#FAFAF8] shadow-2xl sm:h-[640px] sm:rounded-[34px] sm:border sm:border-white/40">
+            <AnimatePresence mode="wait">
+              <AuthScreen key="auth" language={language} />
+            </AnimatePresence>
+          </div>
+        </div>
+      )}
+      {!authLoading && user && (
       <div className="mx-auto grid w-full max-w-6xl gap-0 sm:gap-6 lg:grid-cols-[minmax(260px,1fr)_minmax(420px,560px)] lg:items-stretch">
         <aside className="hidden lg:flex lg:flex-col lg:justify-center lg:pr-6">
           <h1 className="mb-3 text-5xl leading-tight font-light text-[#2C2C2A]">
@@ -359,6 +439,17 @@ export default function App() {
               <option value="sv">Svenska</option>
               <option value="en">English</option>
             </select>
+          </div>
+
+          <div className="absolute top-3 left-3 z-40">
+            <button
+              onClick={() => signOut(auth)}
+              aria-label={language === 'sv' ? 'Logga ut' : 'Sign out'}
+              title={language === 'sv' ? 'Logga ut' : 'Sign out'}
+              className="rounded-full border border-[#E8E4DC] bg-white px-3 py-1.5 text-xs font-light text-[#2C2C2A]/60 shadow-sm transition hover:text-[#2C2C2A] focus:outline-none focus:ring-2 focus:ring-[#C5D4C0]/50"
+            >
+              {language === 'sv' ? 'Logga ut' : 'Sign out'}
+            </button>
           </div>
 
           <AnimatePresence mode="wait">
@@ -563,6 +654,7 @@ export default function App() {
           />
         </div>
       </div>
+      )}
     </div>
   );
 }

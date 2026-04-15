@@ -3,6 +3,8 @@ dist/
 .vscode/
 .DS_Store
 *.log
+.env
+.env.local
 # Squad: ignore runtime state (logs, inbox, sessions)
 .squad/orchestration-log/
 .squad/log/
