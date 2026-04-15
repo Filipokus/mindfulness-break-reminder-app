@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OAuth Callback</title>
+  </head>
+  <body>
+    <script>
+      (function () {
+        var payload = window.location.hash ? window.location.hash.slice(1) : window.location.search.slice(1);
+        if (window.opener) {
+          window.opener.postMessage({ type: 'oauth-callback', payload: payload }, window.location.origin);
+        }
+        window.close();
+      })();
+    </script>
+  </body>
+</html>

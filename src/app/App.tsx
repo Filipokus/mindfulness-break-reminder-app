@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import confetti from 'canvas-confetti';
-import { ArrowLeft, Home, Settings, Plus, X, Coffee, Moon, Users, Briefcase, BookOpen, Palette, Clock, Pause, Play, Check, Download, FlaskConical, Flame } from 'lucide-react';
+import { ArrowLeft, Home, Settings, Plus, X, Coffee, Moon, Users, Briefcase, BookOpen, Palette, Clock, Pause, Play, Check, Download, FlaskConical, Flame, Link2 } from 'lucide-react';
 import { onAuthStateChanged, signOut, type User } from 'firebase/auth';
 import { auth } from '../config/firebase';
 import { loadUserData, saveUserData } from './syncService';
@@ -21,6 +21,20 @@ import {
   DAILY_MINIMUM,
 } from './streaks';
 import type { StreakState } from './streaks';
+
+import {
+  buildBreakCalendarKey,
+  checkAvailabilityAcrossCalendars,
+  connectCalendar,
+  createBreakEventsAcrossCalendars,
+  disconnectCalendar,
+  getCalendarConnections,
+  suggestFallbackTimes,
+  updateBreakEventsAcrossCalendars,
+  getEventIds,
+  setEventIds,
+  type CalendarConnection,
+} from './calendarServiceBackend';
 
 type Screen = 'onboarding1' | 'onboarding2' | 'onboarding3' | 'home' | 'break' | 'create' | 'edit' | 'history';
 type Language = 'sv' | 'en';
@@ -196,6 +210,41 @@ function computeAdaptiveBreaks(
   }));
 }
 
+function playSoothingChime() {
+  try {
+    const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+    if (!AudioContextClass) return;
+
+    const context = new AudioContextClass();
+    const now = context.currentTime;
+    const frequencies = [523.25, 659.25, 783.99];
+
+    frequencies.forEach((frequency, index) => {
+      const osc = context.createOscillator();
+      const gain = context.createGain();
+
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(frequency, now);
+
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.exponentialRampToValueAtTime(0.12, now + 0.05 + index * 0.08);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.4 + index * 0.08);
+
+      osc.connect(gain);
+      gain.connect(context.destination);
+
+      osc.start(now + index * 0.08);
+      osc.stop(now + 0.45 + index * 0.08);
+    });
+
+    window.setTimeout(() => {
+      context.close().catch(() => {});
+    }, 1200);
+  } catch {
+    // Ignore sound errors to avoid breaking reminder flow.
+  }
+}
+
 export default function App() {
   const [language, setLanguage] = useState<Language>(() => {
     const savedLanguage = localStorage.getItem('language');
@@ -219,6 +268,8 @@ export default function App() {
   const [assignment] = useState<ExperimentAssignment>(() => getAssignment());
   // Timestamp when the break screen was shown, used to compute time-to-start
   const breakShownAtRef = useRef<number | null>(null);
+  // Guards against replaying the reminder sound multiple times in the same minute.
+  const reminderPlayedRef = useRef<Record<string, true>>({});
 
   // Streaks feature flag (re-evaluated when toggled in Settings panel)
   const [streaksEnabled, setStreaksEnabled] = useState(() => isStreaksEnabled());
@@ -441,6 +492,49 @@ export default function App() {
     };
   }, [user, profile, breaks, history, completedBreaks, language]);
 
+  useEffect(() => {
+    if (!user || breaks.length === 0) return;
+
+    const runReminderCheck = () => {
+      const now = new Date();
+      const currentTime = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
+      const todayKey = now.toDateString();
+      const dueIndex = breaks.findIndex((breakItem) => breakItem.time === currentTime);
+
+      if (dueIndex < 0) return;
+
+      const triggerKey = `${todayKey}-${currentTime}`;
+      if (reminderPlayedRef.current[triggerKey]) return;
+      reminderPlayedRef.current[triggerKey] = true;
+
+      setBreaks((prev) => prev.map((breakItem, index) => ({
+        ...breakItem,
+        active: index === dueIndex,
+      })));
+
+      playSoothingChime();
+
+      const activeMessage = breaks[dueIndex]?.message || (language === 'sv' ? 'Paus' : 'Break');
+      breakShownAtRef.current = Date.now();
+      trackEvent({
+        timestamp: now.toISOString(),
+        eventType: 'break_shown',
+        experimentVariant: assignment.variant,
+        language,
+        userId: assignment.userId,
+        breakMessage: activeMessage,
+      });
+
+      if (currentScreen === 'home') {
+        setCurrentScreen('break');
+      }
+    };
+
+    runReminderCheck();
+    const interval = window.setInterval(runReminderCheck, 30_000);
+    return () => window.clearInterval(interval);
+  }, [user, breaks, language, assignment.variant, assignment.userId, currentScreen]);
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-[#F5F3EF] via-[#E8E4DC] to-[#D4CFC3] p-0 sm:px-6 sm:py-8 lg:px-8 lg:py-10">
       {authLoading && (
@@ -609,6 +703,7 @@ export default function App() {
               <CreateBreakScreen 
                 key="create"
                 language={language}
+                user={user}
                 breaks={breaks}
                 setBreaks={setBreaks}
                 onBack={() => setCurrentScreen('home')} 
@@ -618,8 +713,9 @@ export default function App() {
               <EditBreakScreen 
                 key="edit"
                 language={language}
+                user={user}
                 breakItem={breaks[editingIndex]}
-                onSave={(updatedBreak) => {
+                onSave={(updatedBreak: Break) => {
                   const newBreaks = [...breaks];
                   newBreaks[editingIndex] = updatedBreak;
                   setBreaks(newBreaks.sort((a, b) => a.time.localeCompare(b.time)));
@@ -1175,12 +1271,26 @@ function HomeScreen({ language, profile, breaks, completedBreaks, streaksEnabled
 }
 
 // Create Break Screen
-function CreateBreakScreen({ language, breaks, setBreaks, onBack }: any) {
+function CreateBreakScreen({ language, user, breaks, setBreaks, onBack }: any) {
   const isSv = language === 'sv';
-  const [time, setTime] = useState('');
   const [message, setMessage] = useState('');
   const [selectedHour, setSelectedHour] = useState('10');
   const [selectedMinute, setSelectedMinute] = useState('00');
+  const [connections, setConnections] = useState<CalendarConnection[]>([]);
+  const [calendarNotice, setCalendarNotice] = useState<string | null>(null);
+  const [calendarConflict, setCalendarConflict] = useState<string | null>(null);
+  const [fallbackSuggestions, setFallbackSuggestions] = useState<string[]>([]);
+  const [isSaving, setIsSaving] = useState(false);
+  const [connectingProvider, setConnectingProvider] = useState<'google' | 'outlook' | null>(null);
+  const [connectEmail, setConnectEmail] = useState('');
+  const [connectPassword, setConnectPassword] = useState('');
+  const [isConnecting, setIsConnecting] = useState(false);
+
+  useEffect(() => {
+    if (user?.uid) {
+      getCalendarConnections(user.uid).then(setConnections).catch(() => {});
+    }
+  }, [user]);
 
   const suggestions = [
     isSv ? 'Ta en promenad' : 'Take a walk',
@@ -1196,12 +1306,106 @@ function CreateBreakScreen({ language, breaks, setBreaks, onBack }: any) {
   const hours = Array.from({ length: 24 }, (_, i) => i.toString().padStart(2, '0'));
   const minutes = ['00', '15', '30', '45'];
 
-  const handleCreate = () => {
+  const handleConnect = async () => {
+    if (!connectingProvider || !user?.uid) return;
+    setIsConnecting(true);
+    setCalendarNotice(null);
+    try {
+      const conn = await connectCalendar(user.uid, connectingProvider, { email: connectEmail, password: connectPassword });
+      setConnections(prev => [...prev.filter(c => c.provider !== connectingProvider), conn]);
+      const label = connectingProvider === 'google' ? 'Google' : 'Outlook';
+      setCalendarNotice(isSv ? `${label} kalender ansluten.` : `${label} Calendar connected.`);
+      setConnectingProvider(null);
+      setConnectEmail('');
+      setConnectPassword('');
+    } catch (error: any) {
+      setCalendarNotice(`${isSv ? 'Kunde inte ansluta' : 'Could not connect'}: ${error?.message || 'Unknown error'}`);
+    } finally {
+      setIsConnecting(false);
+    }
+  };
+
+  const handleDisconnect = async (provider: string) => {
+    if (!user?.uid) return;
+    await disconnectCalendar(user.uid, provider).catch(() => {});
+    setConnections(prev => prev.filter(c => c.provider !== provider));
+  };
+
+  const handleCreate = async () => {
     const timeString = `${selectedHour}:${selectedMinute}`;
-    if (message) {
+    if (!message) return;
+
+    setIsSaving(true);
+    setCalendarNotice(null);
+    setCalendarConflict(null);
+    setFallbackSuggestions([]);
+
+    try {
+      if (user?.uid && connections.length > 0) {
+        const today = new Date();
+        const start = new Date(today);
+        start.setHours(parseInt(selectedHour), parseInt(selectedMinute), 0, 0);
+        const end = new Date(start.getTime() + 15 * 60000);
+
+        const availability = await checkAvailabilityAcrossCalendars(
+          user.uid,
+          start.toISOString(),
+          end.toISOString(),
+          connections.map(c => c.provider)
+        );
+
+        if (!availability.available) {
+          const providers = availability.conflicts.map(p => p === 'google' ? 'Google' : 'Outlook').join(', ');
+          const suggestedISO = await suggestFallbackTimes(user.uid, start.toISOString(), {
+            duration: 15,
+            maxSuggestions: 4,
+            lookAhead: 8,
+          });
+          const suggestedTimes = suggestedISO.map(iso => {
+            const d = new Date(iso);
+            return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
+          });
+          setCalendarConflict(
+            isSv
+              ? `Du verkar vara upptagen i ${providers} vid ${timeString}. Välj gärna en annan tid.`
+              : `You appear to be busy in ${providers} at ${timeString}. Please choose another time.`
+          );
+          setFallbackSuggestions(suggestedTimes);
+          return;
+        }
+
+        const dtstart = new Date();
+        dtstart.setHours(parseInt(selectedHour), parseInt(selectedMinute), 0, 0);
+        const dtend = new Date(dtstart.getTime() + 15 * 60000);
+        const createdIds = await createBreakEventsAcrossCalendars(
+          user.uid,
+          connections.map(c => c.provider),
+          {
+            summary: `Mindfulness Break: ${message}`,
+            description: message,
+            dtstart: dtstart.toISOString(),
+            dtend: dtend.toISOString(),
+            rrule: 'FREQ=DAILY',
+          }
+        );
+        const breakKey = buildBreakCalendarKey(timeString, message);
+        const eventIds: Record<string, string> = {};
+        for (const [provider, id] of Object.entries(createdIds)) {
+          if (typeof id === 'string') eventIds[provider] = id;
+        }
+        if (Object.keys(eventIds).length > 0) setEventIds(breakKey, eventIds);
+      }
+
       const newBreak = { time: timeString, message, active: false };
       setBreaks([...breaks, newBreak].sort((a, b) => a.time.localeCompare(b.time)));
       onBack();
+    } catch {
+      // Calendar error — still save locally
+      const newBreak = { time: timeString, message, active: false };
+      setBreaks([...breaks, newBreak].sort((a, b) => a.time.localeCompare(b.time)));
+      onBack();
+    } finally {
+      setIsSaving(false);
     }
   };
 
@@ -1285,15 +1489,168 @@ function CreateBreakScreen({ language, breaks, setBreaks, onBack }: any) {
             ))}
           </div>
         </div>
+
+        <div className="mt-6 sm:mt-8 rounded-3xl border border-[#E8E4DC] bg-white p-4 sm:p-5">
+          <div className="mb-3 flex items-center gap-2">
+            <Link2 className="h-4 w-4 text-[#2C2C2A]/60" strokeWidth={1.5} />
+            <p className="text-xs sm:text-[15px] font-light text-[#2C2C2A]/70">
+              {isSv ? 'Kalenderkopplingar (valfritt)' : 'Calendar connections (optional)'}
+            </p>
+          </div>
+
+          <p className="mb-3 text-xs sm:text-[14px] font-light text-[#2C2C2A]/50">
+            {isSv
+              ? 'Anslut Google eller Outlook med e-post och applösenord. Vi kontrollerar tillgänglighet och lägger till pausen i din kalender.'
+              : 'Connect Google or Outlook with your email and app password. We check availability and add the break to your calendar.'}
+          </p>
+
+          {/* Connect buttons */}
+          {!connectingProvider && (
+            <div className="flex flex-wrap gap-2">
+              {!connections.some(c => c.provider === 'google') && (
+                <button
+                  onClick={() => setConnectingProvider('google')}
+                  type="button"
+                  className="rounded-full border border-[#E8E4DC] px-3 py-1.5 text-xs sm:text-[14px] font-light text-[#2C2C2A] transition-colors hover:border-[#C5D4C0]"
+                >
+                  {isSv ? 'Anslut Google' : 'Connect Google'}
+                </button>
+              )}
+              {!connections.some(c => c.provider === 'outlook') && (
+                <button
+                  onClick={() => setConnectingProvider('outlook')}
+                  type="button"
+                  className="rounded-full border border-[#E8E4DC] px-3 py-1.5 text-xs sm:text-[14px] font-light text-[#2C2C2A] transition-colors hover:border-[#C5D4C0]"
+                >
+                  {isSv ? 'Anslut Outlook' : 'Connect Outlook'}
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* Inline connect form */}
+          {connectingProvider && (
+            <div className="mt-2 rounded-2xl border border-[#E8E4DC] bg-[#FAFAF8] p-3">
+              <p className="mb-2 text-xs sm:text-[13px] font-light text-[#2C2C2A]/70">
+                {connectingProvider === 'google'
+                  ? (isSv ? 'Ange Gmail och applösenord (myaccount.google.com/apppasswords)' : 'Enter Gmail and app password (myaccount.google.com/apppasswords)')
+                  : (isSv ? 'Ange Outlook-e-post och applösenord (account.microsoft.com/security)' : 'Enter Outlook email and app password (account.microsoft.com/security)')}
+              </p>
+              <input
+                type="email"
+                value={connectEmail}
+                onChange={e => setConnectEmail(e.target.value)}
+                placeholder={isSv ? 'E-postadress' : 'Email address'}
+                className="mb-2 w-full rounded-xl border border-[#E8E4DC] px-3 py-2 text-sm font-light text-[#2C2C2A] focus:border-[#C5D4C0] focus:outline-none"
+              />
+              <input
+                type="password"
+                value={connectPassword}
+                onChange={e => setConnectPassword(e.target.value)}
+                placeholder={isSv ? 'Applösenord' : 'App password'}
+                className="mb-3 w-full rounded-xl border border-[#E8E4DC] px-3 py-2 text-sm font-light text-[#2C2C2A] focus:border-[#C5D4C0] focus:outline-none"
+              />
+              <div className="flex gap-2">
+                <button
+                  onClick={handleConnect}
+                  disabled={!connectEmail || !connectPassword || isConnecting}
+                  type="button"
+                  className="rounded-full bg-[#2C2C2A] px-4 py-1.5 text-xs sm:text-[13px] font-light text-[#FAFAF8] disabled:opacity-40"
+                >
+                  {isConnecting ? (isSv ? 'Ansluter...' : 'Connecting...') : (isSv ? 'Anslut' : 'Connect')}
+                </button>
+                <button
+                  onClick={() => { setConnectingProvider(null); setConnectEmail(''); setConnectPassword(''); }}
+                  type="button"
+                  className="rounded-full border border-[#E8E4DC] px-4 py-1.5 text-xs sm:text-[13px] font-light text-[#2C2C2A]/60"
+                >
+                  {isSv ? 'Avbryt' : 'Cancel'}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Connected calendars + disconnect */}
+          {connections.length > 0 && (
+            <div className="mt-3 flex flex-wrap gap-2">
+              {connections.map(c => (
+                <div key={c.provider} className="flex items-center gap-1.5 rounded-full border border-[#C5D4C0] bg-[#C5D4C0]/10 px-3 py-1">
+                  <span className="text-xs sm:text-[13px] font-light text-[#2C2C2A]/70">
+                    {c.provider === 'google' ? 'Google' : 'Outlook'} ({c.email})
+                  </span>
+                  <button
+                    onClick={() => handleDisconnect(c.provider)}
+                    type="button"
+                    className="ml-1 text-[#2C2C2A]/40 hover:text-[#2C2C2A]"
+                    title={isSv ? 'Koppla från' : 'Disconnect'}
+                  >
+                    <X className="h-3 w-3" strokeWidth={2} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {calendarNotice && (
+            <p className="mt-3 text-xs sm:text-[13px] font-light text-[#2C2C2A]/60">{calendarNotice}</p>
+          )}
+          {calendarConflict && (
+            <div className="mt-3 rounded-2xl bg-[#F7E5E1] px-3 py-2 text-xs sm:text-[13px] font-light text-[#8A4030]">
+              <p>{calendarConflict}</p>
+              {fallbackSuggestions.length > 0 && (
+                <div className="mt-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const [hour, minute] = fallbackSuggestions[0].split(':');
+                      setSelectedHour(hour);
+                      setSelectedMinute(minute);
+                      setCalendarConflict(null);
+                      setFallbackSuggestions([]);
+                    }}
+                    className="mb-2 rounded-full border border-[#D69486] bg-white px-3 py-1.5 text-[11px] sm:text-[12px] text-[#8A4030] hover:bg-[#FFF6F4]"
+                  >
+                    {isSv
+                      ? `Använd nästa lediga tid (${fallbackSuggestions[0]})`
+                      : `Use next available time (${fallbackSuggestions[0]})`}
+                  </button>
+                  <p className="mb-1 text-[#8A4030]/90">
+                    {isSv ? 'Förslag (+15 min):' : 'Suggestions (+15 min):'}
+                  </p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {fallbackSuggestions.map((fallbackTime) => (
+                      <button
+                        key={fallbackTime}
+                        type="button"
+                        onClick={() => {
+                          const [hour, minute] = fallbackTime.split(':');
+                          setSelectedHour(hour);
+                          setSelectedMinute(minute);
+                          setCalendarConflict(null);
+                          setFallbackSuggestions([]);
+                        }}
+                        className="rounded-full border border-[#E5B8AE] bg-white px-2.5 py-1 text-[11px] sm:text-[12px] text-[#8A4030] hover:border-[#D69486]"
+                      >
+                        {fallbackTime}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       </div>
 
       <div className="px-6 sm:px-8 pb-6 sm:pb-10">
         <button 
           onClick={handleCreate}
-          disabled={!message}
+          disabled={!message || isSaving}
           className="w-full py-3 sm:py-5 bg-[#2C2C2A] text-[#FAFAF8] rounded-full text-sm sm:text-[17px] font-light disabled:opacity-30"
         >
-          {isSv ? 'Skapa daglig paus' : 'Create daily break'}
+          {isSaving
+            ? (isSv ? 'Sparar...' : 'Saving...')
+            : (isSv ? 'Skapa daglig paus' : 'Create daily break')}
         </button>
       </div>
     </motion.div>
@@ -1301,11 +1658,14 @@ function CreateBreakScreen({ language, breaks, setBreaks, onBack }: any) {
 }
 
 // Edit Break Screen
-function EditBreakScreen({ language, breakItem, onSave, onDelete, onBack }: any) {
+function EditBreakScreen({ language, user, breakItem, onSave, onDelete, onBack }: any) {
   const isSv = language === 'sv';
   const [selectedHour, setSelectedHour] = useState(breakItem.time.split(':')[0]);
   const [selectedMinute, setSelectedMinute] = useState(breakItem.time.split(':')[1]);
   const [message, setMessage] = useState(breakItem.message);
+  const [calendarConflict, setCalendarConflict] = useState<string | null>(null);
+  const [fallbackSuggestions, setFallbackSuggestions] = useState<string[]>([]);
+  const [isSaving, setIsSaving] = useState(false);
 
   const hours = Array.from({ length: 24 }, (_, i) => i.toString().padStart(2, '0'));
   const minutes = ['00', '15', '30', '45'];
@@ -1321,10 +1681,78 @@ function EditBreakScreen({ language, breakItem, onSave, onDelete, onBack }: any)
     isSv ? 'Skriv ner tankar' : 'Write down thoughts'
   ];
 
-  const handleSave = () => {
+  const handleSave = async () => {
     const timeString = `${selectedHour}:${selectedMinute}`;
-    if (message) {
+    if (!message) return;
+
+    setIsSaving(true);
+    setCalendarConflict(null);
+    setFallbackSuggestions([]);
+
+    try {
+      if (user?.uid) {
+        const connections = await getCalendarConnections(user.uid).catch(() => [] as CalendarConnection[]);
+        if (connections.length > 0) {
+          const today = new Date();
+          const start = new Date(today);
+          start.setHours(parseInt(selectedHour), parseInt(selectedMinute), 0, 0);
+          const end = new Date(start.getTime() + 15 * 60000);
+
+          const availability = await checkAvailabilityAcrossCalendars(
+            user.uid,
+            start.toISOString(),
+            end.toISOString(),
+            connections.map(c => c.provider)
+          );
+
+          if (!availability.available) {
+            const providers = availability.conflicts.map(p => p === 'google' ? 'Google' : 'Outlook').join(', ');
+            const suggestedISO = await suggestFallbackTimes(user.uid, start.toISOString(), {
+              duration: 15,
+              maxSuggestions: 4,
+              lookAhead: 8,
+            });
+            const suggestedTimes = suggestedISO.map(iso => {
+              const d = new Date(iso);
+              return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
+            });
+            setCalendarConflict(
+              isSv
+                ? `Du verkar vara upptagen i ${providers} vid ${timeString}. Välj gärna en annan tid innan du sparar.`
+                : `You appear to be busy in ${providers} at ${timeString}. Please choose another time before saving.`
+            );
+            setFallbackSuggestions(suggestedTimes);
+            return;
+          }
+
+          // Update calendar events for changed break
+          const previousBreakKey = buildBreakCalendarKey(breakItem.time, breakItem.message);
+          const newBreakKey = buildBreakCalendarKey(timeString, message);
+          const oldEventIds = getEventIds(previousBreakKey);
+          if (oldEventIds) {
+            const dtstart = new Date();
+            dtstart.setHours(parseInt(selectedHour), parseInt(selectedMinute), 0, 0);
+            const dtend = new Date(dtstart.getTime() + 15 * 60000);
+            await updateBreakEventsAcrossCalendars(
+              user.uid,
+              connections.map(c => c.provider),
+              oldEventIds,
+              {
+                summary: `Mindfulness Break: ${message}`,
+                description: message,
+                dtstart: dtstart.toISOString(),
+                dtend: dtend.toISOString(),
+                rrule: 'FREQ=DAILY',
+              }
+            ).catch(() => {});
+            setEventIds(newBreakKey, oldEventIds);
+          }
+        }
+      }
+
       onSave({ time: timeString, message, active: breakItem.active });
+    } finally {
+      setIsSaving(false);
     }
   };
 
@@ -1353,7 +1781,11 @@ function EditBreakScreen({ language, breakItem, onSave, onDelete, onBack }: any)
           <div className="flex gap-2 sm:gap-3 items-center">
             <select
               value={selectedHour}
-              onChange={(e) => setSelectedHour(e.target.value)}
+              onChange={(e) => {
+                setSelectedHour(e.target.value);
+                setCalendarConflict(null);
+                setFallbackSuggestions([]);
+              }}
               className="flex-1 py-3 sm:py-4 px-3 sm:px-5 bg-white border-2 border-[#E8E4DC] rounded-3xl text-base sm:text-[20px] font-light text-[#2C2C2A] focus:outline-none focus:border-[#C5D4C0] transition-colors appearance-none text-center"
             >
               {hours.map((h) => (
@@ -1363,7 +1795,11 @@ function EditBreakScreen({ language, breakItem, onSave, onDelete, onBack }: any)
             <span className="text-lg sm:text-[24px] font-light text-[#2C2C2A]/30 px-0.5">:</span>
             <select
               value={selectedMinute}
-              onChange={(e) => setSelectedMinute(e.target.value)}
+              onChange={(e) => {
+                setSelectedMinute(e.target.value);
+                setCalendarConflict(null);
+                setFallbackSuggestions([]);
+              }}
               className="flex-1 py-3 sm:py-4 px-3 sm:px-5 bg-white border-2 border-[#E8E4DC] rounded-3xl text-base sm:text-[20px] font-light text-[#2C2C2A] focus:outline-none focus:border-[#C5D4C0] transition-colors appearance-none text-center"
             >
               {minutes.map((m) => (
@@ -1380,7 +1816,11 @@ function EditBreakScreen({ language, breakItem, onSave, onDelete, onBack }: any)
           <input
             type="text"
             value={message}
-            onChange={(e) => setMessage(e.target.value)}
+            onChange={(e) => {
+              setMessage(e.target.value);
+              setCalendarConflict(null);
+              setFallbackSuggestions([]);
+            }}
             placeholder={isSv ? 't.ex. Ta en promenad' : 'e.g. Take a walk'}
             className="w-full py-3 sm:py-4 px-4 sm:px-6 bg-white border-2 border-[#E8E4DC] rounded-3xl text-sm sm:text-[17px] font-light text-[#2C2C2A] placeholder:text-[#2C2C2A]/30 focus:outline-none focus:border-[#C5D4C0] transition-colors"
           />
@@ -1392,7 +1832,11 @@ function EditBreakScreen({ language, breakItem, onSave, onDelete, onBack }: any)
             {suggestions.map((suggestion) => (
               <button
                 key={suggestion}
-                onClick={() => setMessage(suggestion)}
+                onClick={() => {
+                  setMessage(suggestion);
+                  setCalendarConflict(null);
+                  setFallbackSuggestions([]);
+                }}
                 className="py-1.5 sm:py-2 px-3 sm:px-4 bg-white border border-[#E8E4DC] rounded-full text-xs sm:text-[14px] font-light text-[#2C2C2A]/60 hover:border-[#C5D4C0] hover:text-[#2C2C2A] transition-colors"
               >
                 {suggestion}
@@ -1400,6 +1844,52 @@ function EditBreakScreen({ language, breakItem, onSave, onDelete, onBack }: any)
             ))}
           </div>
         </div>
+
+        {calendarConflict && (
+          <div className="mb-6 sm:mb-8 rounded-2xl bg-[#F7E5E1] px-3 py-2 text-xs sm:text-[13px] font-light text-[#8A4030]">
+            <p>{calendarConflict}</p>
+            {fallbackSuggestions.length > 0 && (
+              <div className="mt-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const [hour, minute] = fallbackSuggestions[0].split(':');
+                    setSelectedHour(hour);
+                    setSelectedMinute(minute);
+                    setCalendarConflict(null);
+                    setFallbackSuggestions([]);
+                  }}
+                  className="mb-2 rounded-full border border-[#D69486] bg-white px-3 py-1.5 text-[11px] sm:text-[12px] text-[#8A4030] hover:bg-[#FFF6F4]"
+                >
+                  {isSv
+                    ? `Använd nästa lediga tid (${fallbackSuggestions[0]})`
+                    : `Use next available time (${fallbackSuggestions[0]})`}
+                </button>
+                <p className="mb-1 text-[#8A4030]/90">
+                  {isSv ? 'Förslag (+15 min):' : 'Suggestions (+15 min):'}
+                </p>
+                <div className="flex flex-wrap gap-1.5">
+                  {fallbackSuggestions.map((fallbackTime) => (
+                    <button
+                      key={fallbackTime}
+                      type="button"
+                      onClick={() => {
+                        const [hour, minute] = fallbackTime.split(':');
+                        setSelectedHour(hour);
+                        setSelectedMinute(minute);
+                        setCalendarConflict(null);
+                        setFallbackSuggestions([]);
+                      }}
+                      className="rounded-full border border-[#E5B8AE] bg-white px-2.5 py-1 text-[11px] sm:text-[12px] text-[#8A4030] hover:border-[#D69486]"
+                    >
+                      {fallbackTime}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
 
         <button
           onClick={onDelete}
@@ -1412,10 +1902,12 @@ function EditBreakScreen({ language, breakItem, onSave, onDelete, onBack }: any)
       <div className="px-6 sm:px-8 pb-6 sm:pb-10">
         <button 
           onClick={handleSave}
-          disabled={!message}
+          disabled={!message || isSaving}
           className="w-full py-3 sm:py-5 bg-[#2C2C2A] text-[#FAFAF8] rounded-full text-sm sm:text-[17px] font-light disabled:opacity-30"
         >
-          {isSv ? 'Spara ändringar' : 'Save changes'}
+          {isSaving
+            ? (isSv ? 'Sparar...' : 'Saving...')
+            : (isSv ? 'Spara ändringar' : 'Save changes')}
         </button>
       </div>
     </motion.div>
