@@ -1,15 +1,16 @@
 import fetch from 'node-fetch';
 
-// Google Calendar CalDAV — direct HTTP (no tsdav) for precise error handling.
+// Google Calendar CalDAV — direct HTTP for precise error handling.
 // Requirements:
 //   1. 2-Step Verification enabled on the Google account
 //   2. App Password (16 chars) from https://myaccount.google.com/apppasswords
 //   3. Enter full Gmail address + that App Password (NOT the normal Google password)
 
+// NOTE: Google expects the @ in the path unencoded (many clients do this)
 const USER_URL = (email) =>
-  `https://apidata.googleusercontent.com/caldav/v2/${encodeURIComponent(email)}/user/`;
+  `https://apidata.googleusercontent.com/caldav/v2/${email}/user/`;
 const EVENTS_URL = (email) =>
-  `https://apidata.googleusercontent.com/caldav/v2/${encodeURIComponent(email)}/events/`;
+  `https://apidata.googleusercontent.com/caldav/v2/${email}/events/`;
 
 function basicAuth(email, password) {
   const normalized = String(password).replace(/\s+/g, '');
@@ -21,32 +22,58 @@ function toUtcCompact(iso) {
 }
 
 async function propfindUser(email, password) {
-  const res = await fetch(USER_URL(email), {
+  const propfindXML = `<?xml version="1.0" encoding="utf-8"?><propfind xmlns="DAV:"><prop><displayname/><resourcetype/></prop></propfind>`;
+  const commonHeaders = {
+    'Content-Type': 'application/xml; charset=utf-8',
+    'Content-Length': String(Buffer.byteLength(propfindXML, 'utf8')),
+    Depth: '0',
+  };
+
+  // Send without auth first — let Google send the auth challenge (some servers require this)
+  const challenge = await fetch(USER_URL(email), {
     method: 'PROPFIND',
-    headers: {
-      Authorization: basicAuth(email, password),
-      'Content-Type': 'application/xml; charset=utf-8',
-      Depth: '0',
-    },
-    body: `<?xml version="1.0" encoding="utf-8"?><propfind xmlns="DAV:"><prop><displayname/></prop></propfind>`,
+    redirect: 'manual',       // catch redirects manually so auth header isn't stripped
+    headers: commonHeaders,
+    body: propfindXML,
   });
 
-  if (res.status === 401) {
-    const err = new Error('401');
+  // If Google redirected (e.g. %40 → @ normalisation), follow manually with auth
+  let targetUrl = USER_URL(email);
+  if ([301, 302, 303, 307, 308].includes(challenge.status)) {
+    targetUrl = challenge.headers.get('location') || targetUrl;
+    console.log(`[Google CalDAV] redirect detected → ${targetUrl}`);
+  }
+
+  // Now send the real PROPFIND with credentials
+  const res = await fetch(targetUrl, {
+    method: 'PROPFIND',
+    redirect: 'manual',
+    headers: { ...commonHeaders, Authorization: basicAuth(email, password) },
+    body: propfindXML,
+  });
+
+  const statusCode = res.status;
+  const body = await res.text().catch(() => '');
+  console.log(`[Google CalDAV] PROPFIND status=${statusCode} url=${targetUrl}`);
+  if (body) console.log(`[Google CalDAV] response body snippet: ${body.slice(0, 400)}`);
+
+  if (statusCode === 401) {
+    const err = new Error(`Google returned 401. Body: ${body.slice(0, 200)}`);
     err.status = 401;
+    err.googleBody = body.slice(0, 300);
     throw err;
   }
-  if (res.status === 403) {
+  if (statusCode === 403) {
     const err = new Error('403 — CalDAV access may be restricted for this account');
     err.status = 403;
     throw err;
   }
-  if (res.status !== 207 && !res.ok) {
-    const err = new Error(`Unexpected status ${res.status} from Google CalDAV`);
-    err.status = res.status;
-    throw err;
-  }
-  return true;
+  // 207 Multi-Status = authenticated OK
+  if (statusCode === 207 || (statusCode >= 200 && statusCode < 300)) return true;
+
+  const err = new Error(`Unexpected status ${statusCode} from Google CalDAV. Body: ${body.slice(0, 200)}`);
+  err.status = statusCode;
+  throw err;
 }
 
 export const googleCalendar = {

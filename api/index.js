@@ -64,9 +64,9 @@ app.post('/api/calendar/connect', async (req, res) => {
             error: 'Google CalDAV access is forbidden (403). CalDAV may be blocked by your Google Workspace/org policy. Try a personal Gmail account.',
           });
         }
-        // 401 or anything else = wrong credentials
+        const detail = error.googleBody ? ` | Google response: ${error.googleBody}` : '';
         return res.status(401).json({
-          error: 'Google authentication failed (401). Steps to fix:\n1. Go to myaccount.google.com/security and enable 2-Step Verification\n2. Then go to myaccount.google.com/apppasswords\n3. Create an App Password — use that 16-character code, NOT your normal password',
+          error: `Google authentication failed (401).${detail} — Use Gmail address + App Password from myaccount.google.com/apppasswords`,
         });
       }
       return res.status(401).json({ error: 'Invalid email or password' });
