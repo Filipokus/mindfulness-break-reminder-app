@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "sprint": {
+    "name": "Adaptive Mindfulness MVP",
+    "goal": "Ship an adaptive, engaging mindfulness MVP that measurably improves break completion and 7-day retention, with safe rollout controls",
+    "startDate": "2026-04-15",
+    "endDate": "2026-04-28",
+    "duration": "2 weeks",
+    "capacity": "40 story points",
+    "priorityModel": "dependency-driven",
+    "backlogFile": ".squad/sprint-backlog.md"
+  },
+  "featureFlags": {
+    "adaptive_scheduler_v1": false,
+    "energy_checkin": false,
+    "streaks_v1": false
+  },
+  "successCriteria": {
+    "allIssuesMerged": true,
+    "zeroRegressions": true,
+    "accessibilityAA": true,
+    "eventTrackingOverhead": "<5ms",
+    "rolloutControlsReady": true,
+    "experimentValidData": "50+ users per variant"
+  },
+  "executionTimeline": {
+    "week1": {
+      "mon_tue": "P0#1 Event Tracking + P0#2 Energy Check-In",
+      "wed_thu": "P0#3 Adaptive Scheduler + P0#4 Intensity Modes",
+      "fri": "Testing & P1 planning"
+    },
+    "week2": {
+      "mon_tue": "P1#1 Streaks + P1#2 Insights Dashboard",
+      "wed": "P1#3 Accessibility + P1#4 Feature Flags",
+      "thu": "P2#1 Experiment integration",
+      "fri": "Sprint Review + Retrospective"
+    }
+  }
+}
