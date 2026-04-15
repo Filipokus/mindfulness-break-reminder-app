@@ -17,6 +17,8 @@ function figmaAssetResolver() {
 }
 
 export default defineConfig({
+  // Required for GitHub Pages project sites: https://<user>.github.io/<repo>/
+  base: '/mindfulness-break-reminder-app/',
   plugins: [
     figmaAssetResolver(),
     // The React and Tailwind plugins are both required for Make, even if
