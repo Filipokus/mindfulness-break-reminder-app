@@ -24,11 +24,13 @@ import type { StreakState } from './streaks';
 
 type Screen = 'onboarding1' | 'onboarding2' | 'onboarding3' | 'home' | 'break' | 'create' | 'edit' | 'history';
 type Language = 'sv' | 'en';
+type EnergyLevel = 'low' | 'medium' | 'high';
 
 interface CompletedBreak {
   timestamp: string;
   message: string;
   duration: number;
+  energyLevel?: EnergyLevel | null;
 }
 
 interface Break {
@@ -114,6 +116,12 @@ const TRANSLATABLE_PHRASES: Array<{ sv: string; en: string }> = [
   { sv: 'dagars streak', en: 'days streak' },
   { sv: 'nådedag kvar', en: 'grace day left' },
   { sv: 'inga nådedagar kvar', en: 'no grace days left' },
+  // Energy check-in
+  { sv: 'Hur är din energi?', en: 'How is your energy?' },
+  { sv: 'Låg', en: 'Low' },
+  { sv: 'Medel', en: 'Medium' },
+  { sv: 'Hög', en: 'High' },
+  { sv: 'Hoppa över', en: 'Skip' },
 ];
 
 function translateKnownPhrase(value: string, from: Language, to: Language) {
@@ -132,6 +140,11 @@ function getInitialBreaks(language: Language): Break[] {
     { time: '13:00', message: language === 'sv' ? 'Lunch utan skärm' : 'Screen-free lunch', active: false },
     { time: '15:30', message: language === 'sv' ? 'Tre djupa andetag' : 'Three deep breaths', active: false }
   ];
+}
+
+/** Returns true when the energy_checkin feature flag is enabled (defaults to OFF). */
+function isEnergyCheckinEnabled(): boolean {
+  return localStorage.getItem('energy_checkin') === 'true';
 }
 
 // Minimum completions required before adaptive scheduling kicks in (below this threshold
@@ -210,6 +223,13 @@ export default function App() {
   // Streaks feature flag (re-evaluated when toggled in Settings panel)
   const [streaksEnabled, setStreaksEnabled] = useState(() => isStreaksEnabled());
 
+  // Energy check-in feature flag
+  const [energyCheckinEnabled, setEnergyCheckinEnabled] = useState(() => isEnergyCheckinEnabled());
+  // Whether the energy check-in modal is currently visible
+  const [showEnergyCheckin, setShowEnergyCheckin] = useState(false);
+  // Energy level chosen in the check-in modal (null = skipped/neutral)
+  const [pendingEnergyLevel, setPendingEnergyLevel] = useState<EnergyLevel | null>(null);
+
   // Derived streak state – recomputed whenever completedBreaks changes
   const streakState = useMemo(() => computeStreakState(completedBreaks), [completedBreaks]);
 
@@ -271,6 +291,28 @@ export default function App() {
 
     setBreaks(newBreaks);
   };
+
+  /**
+   * Starts the break flow. If the energy_checkin flag is ON, shows the modal
+   * first; otherwise navigates directly to the break screen.
+   */
+  const handleGoToBreak = useCallback((activeMessage: string) => {
+    breakShownAtRef.current = Date.now();
+    trackEvent({
+      timestamp: new Date().toISOString(),
+      eventType: 'break_shown',
+      experimentVariant: assignment.variant,
+      language,
+      userId: assignment.userId,
+      breakMessage: activeMessage,
+    });
+    if (energyCheckinEnabled) {
+      setPendingEnergyLevel(null);
+      setShowEnergyCheckin(true);
+    } else {
+      setCurrentScreen('break');
+    }
+  }, [assignment, language, energyCheckinEnabled]);
 
   const handleLanguageChange = (nextLanguage: Language) => {
     if (nextLanguage === language) {
@@ -496,16 +538,7 @@ export default function App() {
                 streakState={streakState}
                 onBreakClick={() => {
                   const activeMessage = breaks.find((b) => b.active)?.message || (language === 'sv' ? 'Paus' : 'Break');
-                  breakShownAtRef.current = Date.now();
-                  trackEvent({
-                    timestamp: new Date().toISOString(),
-                    eventType: 'break_shown',
-                    experimentVariant: assignment.variant,
-                    language,
-                    userId: assignment.userId,
-                    breakMessage: activeMessage,
-                  });
-                  setCurrentScreen('break');
+                  handleGoToBreak(activeMessage);
                 }}
                 onCreateClick={() => setCurrentScreen('create')}
                 onEditClick={(index: number) => {
@@ -514,16 +547,7 @@ export default function App() {
                 }}
                 onPauseClick={() => {
                   const activeMessage = breaks.find((b) => b.active)?.message || (language === 'sv' ? 'Paus' : 'Break');
-                  breakShownAtRef.current = Date.now();
-                  trackEvent({
-                    timestamp: new Date().toISOString(),
-                    eventType: 'break_shown',
-                    experimentVariant: assignment.variant,
-                    language,
-                    userId: assignment.userId,
-                    breakMessage: activeMessage,
-                  });
-                  setCurrentScreen('break');
+                  handleGoToBreak(activeMessage);
                 }}
                 onHistoryClick={() => setCurrentScreen('history')}
               />
@@ -562,7 +586,8 @@ export default function App() {
                     durationSeconds: duration,
                   });
                   setHistory([...history, { time: timeString, message: activeMessage }]);
-                  setCompletedBreaks([...completedBreaks, { timestamp: now.toISOString(), message: activeMessage, duration }]);
+                  setCompletedBreaks([...completedBreaks, { timestamp: now.toISOString(), message: activeMessage, duration, energyLevel: pendingEnergyLevel }]);
+                  setPendingEnergyLevel(null);
                   setCurrentScreen('home');
                 }} 
                 onCancel={(wasActive) => {
@@ -575,6 +600,7 @@ export default function App() {
                     breakMessage: breaks.find((b) => b.active)?.message,
                     wasStarted: wasActive,
                   });
+                  setPendingEnergyLevel(null);
                   setCurrentScreen('home');
                 }}
               />
@@ -615,9 +641,14 @@ export default function App() {
                 assignment={assignment}
                 streaksEnabled={streaksEnabled}
                 streakState={streakState}
+                energyCheckinEnabled={energyCheckinEnabled}
                 onStreaksToggle={(next: boolean) => {
                   localStorage.setItem('streaks_v1', next ? 'true' : 'false');
                   setStreaksEnabled(next);
+                }}
+                onEnergyCheckinToggle={(next: boolean) => {
+                  localStorage.setItem('energy_checkin', next ? 'true' : 'false');
+                  setEnergyCheckinEnabled(next);
                 }}
                 onBack={() => setCurrentScreen('home')} 
               />
@@ -631,6 +662,25 @@ export default function App() {
                 milestone={pendingMilestone}
                 language={language}
                 onDismiss={() => setPendingMilestone(null)}
+              />
+            )}
+          </AnimatePresence>
+
+          {/* Energy check-in modal */}
+          <AnimatePresence>
+            {showEnergyCheckin && (
+              <EnergyCheckInModal
+                language={language}
+                onSelect={(level) => {
+                  setPendingEnergyLevel(level);
+                  setShowEnergyCheckin(false);
+                  setCurrentScreen('break');
+                }}
+                onSkip={() => {
+                  setPendingEnergyLevel(null);
+                  setShowEnergyCheckin(false);
+                  setCurrentScreen('break');
+                }}
               />
             )}
           </AnimatePresence>
@@ -1499,13 +1549,15 @@ function BreakScreen({ language, message, onStart, onComplete, onCancel }: { lan
 }
 
 // History Screen
-function HistoryScreen({ language, completedBreaks, assignment, streaksEnabled, streakState, onStreaksToggle, onBack }: {
+function HistoryScreen({ language, completedBreaks, assignment, streaksEnabled, streakState, energyCheckinEnabled, onStreaksToggle, onEnergyCheckinToggle, onBack }: {
   language: Language;
   completedBreaks: CompletedBreak[];
   assignment: ExperimentAssignment;
   streaksEnabled: boolean;
   streakState: StreakState;
+  energyCheckinEnabled: boolean;
   onStreaksToggle: (next: boolean) => void;
+  onEnergyCheckinToggle: (next: boolean) => void;
   onBack: () => void;
 }) {
   const isSv = language === 'sv';
@@ -1574,6 +1626,12 @@ function HistoryScreen({ language, completedBreaks, assignment, streaksEnabled, 
   const formatRate = (rate: number) => `${(rate * 100).toFixed(0)}%`;
   const formatSeconds = (s: number | null) =>
     s !== null ? (s < 60 ? `${s}s` : `${Math.round(s / 60)}m`) : '—';
+
+  // Energy insights – computed once for use in the panel below
+  const energyBreaks = completedBreaks.filter((b) => b.energyLevel);
+  const energyCounts = { low: 0, medium: 0, high: 0 };
+  energyBreaks.forEach((b) => { energyCounts[b.energyLevel!]++; });
+  const energyTotal = energyBreaks.length;
 
   return (
     <motion.div
@@ -1700,11 +1758,28 @@ function HistoryScreen({ language, completedBreaks, assignment, streaksEnabled, 
                           <div className="text-xs sm:text-[15px] font-light text-[#2C2C2A] mb-0.5 sm:mb-1">
                             {b.message}
                           </div>
-                          <div className="text-xs sm:text-[13px] font-light text-[#2C2C2A]/40">
-                            {new Date(b.timestamp).toLocaleTimeString(isSv ? 'sv-SE' : 'en-GB', {
-                              hour: '2-digit', 
-                              minute: '2-digit' 
-                            })} • {Math.floor(b.duration / 60)} {isSv ? 'min' : 'min'}
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="text-xs sm:text-[13px] font-light text-[#2C2C2A]/40">
+                              {new Date(b.timestamp).toLocaleTimeString(isSv ? 'sv-SE' : 'en-GB', {
+                                hour: '2-digit', 
+                                minute: '2-digit' 
+                              })} • {Math.floor(b.duration / 60)} {isSv ? 'min' : 'min'}
+                            </span>
+                            {b.energyLevel && (
+                              <span className={`text-[10px] sm:text-xs font-light px-1.5 py-0.5 rounded-full ${
+                                b.energyLevel === 'low'
+                                  ? 'bg-blue-50 text-blue-600'
+                                  : b.energyLevel === 'medium'
+                                  ? 'bg-amber-50 text-amber-600'
+                                  : 'bg-[#C5D4C0]/30 text-[#2C2C2A]/70'
+                              }`}>
+                                {b.energyLevel === 'low'
+                                  ? (isSv ? '🌙 Låg' : '🌙 Low')
+                                  : b.energyLevel === 'medium'
+                                  ? (isSv ? '⚡ Medel' : '⚡ Medium')
+                                  : (isSv ? '🌟 Hög' : '🌟 High')}
+                              </span>
+                            )}
                           </div>
                         </div>
                       </div>
@@ -1784,6 +1859,60 @@ function HistoryScreen({ language, completedBreaks, assignment, streaksEnabled, 
                 : (isSv ? 'Av' : 'Off')}
             </button>
           </div>
+
+          {/* Energy check-in feature flag toggle */}
+          <div className="flex items-center justify-between mb-3 sm:mb-4">
+            <div className="flex items-center gap-2">
+              <span className="text-base leading-none" aria-hidden="true">⚡</span>
+              <span className="text-xs sm:text-[13px] font-light text-[#2C2C2A]/70">
+                energy_checkin
+              </span>
+            </div>
+            <button
+              onClick={() => onEnergyCheckinToggle(!energyCheckinEnabled)}
+              className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-light border transition-colors ${
+                energyCheckinEnabled
+                  ? 'border-[#C5D4C0] text-[#2C2C2A] bg-[#C5D4C0]/10'
+                  : 'border-[#E8E4DC] text-[#2C2C2A]/40 bg-white'
+              }`}
+            >
+              <span className={`w-1.5 h-1.5 rounded-full ${energyCheckinEnabled ? 'bg-[#C5D4C0]' : 'bg-[#E8E4DC]'}`} />
+              {energyCheckinEnabled
+                ? (isSv ? 'Aktiv' : 'Active')
+                : (isSv ? 'Av' : 'Off')}
+            </button>
+          </div>
+
+          {/* Energy insights summary */}
+          {energyCheckinEnabled && energyTotal > 0 && (
+            <div className="mb-3 sm:mb-4 bg-white rounded-2xl p-3 sm:p-4">
+              <p className="text-xs sm:text-[13px] font-light text-[#2C2C2A]/50 uppercase tracking-wide mb-2 sm:mb-3">
+                {isSv ? 'Energiöversikt' : 'Energy insights'}
+              </p>
+              <div className="grid grid-cols-3 gap-2">
+                {(['low', 'medium', 'high'] as const).map((level) => (
+                  <div key={level} className="text-center">
+                    <div className="text-lg sm:text-xl mb-0.5" aria-hidden="true">
+                      {level === 'low' ? '🌙' : level === 'medium' ? '⚡' : '🌟'}
+                    </div>
+                    <div className="text-sm sm:text-[15px] font-light text-[#2C2C2A]">
+                      {energyCounts[level]}
+                    </div>
+                    <div className="text-[10px] sm:text-xs font-light text-[#2C2C2A]/40">
+                      {`${Math.round((energyCounts[level] / energyTotal) * 100)}%`}
+                    </div>
+                    <div className="text-[10px] sm:text-xs font-light text-[#2C2C2A]/50 mt-0.5">
+                      {level === 'low'
+                        ? (isSv ? 'Låg' : 'Low')
+                        : level === 'medium'
+                        ? (isSv ? 'Medel' : 'Medium')
+                        : (isSv ? 'Hög' : 'High')}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Per-variant metrics */}
           <div className="space-y-2 sm:space-y-3 mb-4 sm:mb-5">
@@ -1915,6 +2044,70 @@ function MilestoneBadge({ milestone, language, onDismiss }: {
           className="w-full py-3 sm:py-4 bg-[#C5D4C0] text-[#2C2C2A] rounded-full text-sm sm:text-[15px] font-light"
         >
           {isSv ? 'Tack!' : 'Thank you!'}
+        </button>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+// Energy Check-In Modal – overlay asking the user to self-report energy before a break
+function EnergyCheckInModal({ language, onSelect, onSkip }: {
+  language: Language;
+  onSelect: (level: EnergyLevel) => void;
+  onSkip: () => void;
+}) {
+  const isSv = language === 'sv';
+
+  const levels: { value: EnergyLevel; labelSv: string; labelEn: string; emoji: string; color: string }[] = [
+    { value: 'low',    labelSv: 'Låg',   labelEn: 'Low',    emoji: '🌙', color: 'bg-blue-50   border-blue-100   text-blue-700' },
+    { value: 'medium', labelSv: 'Medel', labelEn: 'Medium', emoji: '⚡', color: 'bg-amber-50  border-amber-100  text-amber-700' },
+    { value: 'high',   labelSv: 'Hög',   labelEn: 'High',   emoji: '🌟', color: 'bg-[#C5D4C0]/30 border-[#C5D4C0] text-[#2C2C2A]' },
+  ];
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="absolute inset-0 z-50 flex items-end sm:items-center justify-center bg-[#2C2C2A]/40 backdrop-blur-sm p-4 sm:p-6"
+      role="dialog"
+      aria-modal="true"
+      aria-label={isSv ? 'Hur är din energi?' : 'How is your energy?'}
+    >
+      <motion.div
+        initial={{ y: 60, opacity: 0 }}
+        animate={{ y: 0, opacity: 1 }}
+        exit={{ y: 60, opacity: 0 }}
+        transition={{ type: 'spring', stiffness: 280, damping: 26 }}
+        onClick={(e) => e.stopPropagation()}
+        className="bg-[#FAFAF8] rounded-[28px] p-6 sm:p-8 w-full max-w-sm shadow-2xl"
+      >
+        <h2 className="text-lg sm:text-[22px] font-light text-[#2C2C2A] mb-1 text-center">
+          {isSv ? 'Hur är din energi?' : 'How is your energy?'}
+        </h2>
+        <p className="text-xs sm:text-[14px] font-light text-[#2C2C2A]/50 mb-5 sm:mb-6 text-center">
+          {isSv ? 'Välj ett alternativ innan du startar pausen' : 'Choose an option before starting your break'}
+        </p>
+
+        <div className="flex gap-2 sm:gap-3 mb-4 sm:mb-5">
+          {levels.map(({ value, labelSv, labelEn, emoji, color }) => (
+            <button
+              key={value}
+              onClick={() => onSelect(value)}
+              className={`flex-1 min-h-[56px] sm:min-h-[64px] flex flex-col items-center justify-center gap-1 rounded-2xl border-2 transition-all active:scale-95 ${color}`}
+              aria-label={isSv ? labelSv : labelEn}
+            >
+              <span className="text-xl sm:text-2xl" aria-hidden="true">{emoji}</span>
+              <span className="text-[11px] sm:text-xs font-light">{isSv ? labelSv : labelEn}</span>
+            </button>
+          ))}
+        </div>
+
+        <button
+          onClick={onSkip}
+          className="w-full min-h-[44px] py-2.5 text-[#2C2C2A]/40 text-xs sm:text-[14px] font-light hover:text-[#2C2C2A] transition-colors"
+        >
+          {isSv ? 'Hoppa över' : 'Skip'}
         </button>
       </motion.div>
     </motion.div>
