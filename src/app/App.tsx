@@ -113,15 +113,24 @@ function getInitialBreaks(language: Language): Break[] {
   ];
 }
 
+// Minimum completions required before adaptive scheduling kicks in (below this threshold
+// the data is too sparse to produce a meaningful preference signal).
+const MIN_COMPLETIONS_FOR_ADAPTIVE = 3;
+
+// Earliest and latest hours (inclusive) considered for adaptive break scheduling.
+// Keeps suggested breaks within a sensible daytime window.
+const ADAPTIVE_WINDOW_START_HOUR = 7;
+const ADAPTIVE_WINDOW_END_HOUR = 21;
+
 // Computes adaptive break times based on historical completion data.
-// Falls back to static defaults when insufficient data (< 3 completions).
+// Falls back to static defaults when there are fewer than MIN_COMPLETIONS_FOR_ADAPTIVE entries.
 function computeAdaptiveBreaks(
   completedBreaks: CompletedBreak[],
   activity: string,
   language: Language,
   frequency: number
 ): Break[] {
-  if (completedBreaks.length < 3) {
+  if (completedBreaks.length < MIN_COMPLETIONS_FOR_ADAPTIVE) {
     return getInitialBreaks(language);
   }
 
@@ -132,9 +141,9 @@ function computeAdaptiveBreaks(
     hourCounts[hour]++;
   });
 
-  // Restrict candidate hours to a sensible daytime window (7–21)
+  // Restrict candidate hours to the configured daytime window
   const candidates: { hour: number; count: number }[] = [];
-  for (let h = 7; h <= 21; h++) {
+  for (let h = ADAPTIVE_WINDOW_START_HOUR; h <= ADAPTIVE_WINDOW_END_HOUR; h++) {
     candidates.push({ hour: h, count: hourCounts[h] });
   }
   candidates.sort((a, b) => b.count - a.count);
@@ -416,6 +425,7 @@ export default function App() {
                     language,
                     userId: assignment.userId,
                     breakMessage: breaks.find((b) => b.active)?.message,
+                    wasStarted: wasActive,
                   });
                   setCurrentScreen('home');
                 }}
@@ -1434,11 +1444,19 @@ function HistoryScreen({ language, completedBreaks, assignment, onBack }: {
 
         {/* Experiment panel */}
         <div className="border-t border-[#E8E4DC] pt-4 sm:pt-6 pb-6 sm:pb-8">
-          <div className="flex items-center gap-2 mb-3 sm:mb-4">
-            <FlaskConical className="w-3.5 sm:w-4 h-3.5 sm:h-4 text-[#C5D4C0]" strokeWidth={1.5} />
-            <p className="text-xs sm:text-[13px] font-light text-[#2C2C2A]/50 uppercase tracking-wide">
-              {isSv ? 'Experiment' : 'Experiment'}
-            </p>
+          <div className="flex items-center justify-between gap-2 mb-3 sm:mb-4">
+            <div className="flex items-center gap-2">
+              <FlaskConical className="w-3.5 sm:w-4 h-3.5 sm:h-4 text-[#C5D4C0]" strokeWidth={1.5} />
+              <p className="text-xs sm:text-[13px] font-light text-[#2C2C2A]/50 uppercase tracking-wide">
+                {isSv ? 'Experiment' : 'Experiment'}
+              </p>
+            </div>
+            <button
+              onClick={refreshMetrics}
+              className="text-[10px] sm:text-xs font-light text-[#2C2C2A]/40 hover:text-[#2C2C2A] transition-colors"
+            >
+              {isSv ? 'Uppdatera' : 'Refresh'}
+            </button>
           </div>
 
           {/* Variant badge + feature flag toggle */}
@@ -1471,7 +1489,7 @@ function HistoryScreen({ language, completedBreaks, assignment, onBack }: {
           </div>
 
           {/* Per-variant metrics */}
-          <div className="space-y-2 sm:space-y-3 mb-4 sm:mb-5" onClick={refreshMetrics}>
+          <div className="space-y-2 sm:space-y-3 mb-4 sm:mb-5">
             {metrics.variants.map((v) => (
               <div key={v.variant} className="bg-white rounded-2xl p-3 sm:p-4">
                 <div className="flex items-center justify-between mb-2 sm:mb-3">
@@ -1504,7 +1522,7 @@ function HistoryScreen({ language, completedBreaks, assignment, onBack }: {
                       {formatSeconds(v.medianTimeToStartSeconds)}
                     </div>
                     <div className="text-[10px] sm:text-xs font-light text-[#2C2C2A]/40 mt-0.5">
-                      {isSv ? 'tid start' : 'time-start'}
+                      {isSv ? 'tid till start' : 'time to start'}
                     </div>
                   </div>
                   <div className="text-center">

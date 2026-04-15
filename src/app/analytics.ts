@@ -13,6 +13,7 @@ export interface AnalyticsEvent {
   breakMessage?: string;
   durationSeconds?: number;
   timeToStartSeconds?: number;
+  wasStarted?: boolean; // for break_skip: true if user had already started the timer
 }
 
 const STORAGE_KEY = 'experiment_events';
