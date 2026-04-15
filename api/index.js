@@ -59,8 +59,14 @@ app.post('/api/calendar/connect', async (req, res) => {
     } catch (error) {
       console.error(`Credential validation failed for ${provider}:`, error.message);
       if (provider === 'google') {
+        if (error.status === 403) {
+          return res.status(403).json({
+            error: 'Google CalDAV access is forbidden (403). CalDAV may be blocked by your Google Workspace/org policy. Try a personal Gmail account.',
+          });
+        }
+        // 401 or anything else = wrong credentials
         return res.status(401).json({
-          error: 'Google authentication failed. Use your Gmail address + a 16-character Google App Password (not your normal password).',
+          error: 'Google authentication failed (401). Steps to fix:\n1. Go to myaccount.google.com/security and enable 2-Step Verification\n2. Then go to myaccount.google.com/apppasswords\n3. Create an App Password — use that 16-character code, NOT your normal password',
         });
       }
       return res.status(401).json({ error: 'Invalid email or password' });

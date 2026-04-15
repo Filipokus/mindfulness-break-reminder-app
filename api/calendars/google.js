@@ -1,106 +1,146 @@
-import { createDAVClient } from 'tsdav';
+import fetch from 'node-fetch';
 
-// Google Calendar CalDAV configuration
-// Google Calendar exposes CalDAV at: https://apidata.googleusercontent.com/caldav/v2/
-// Users must generate an App Password at: https://myaccount.google.com/apppasswords
+// Google Calendar CalDAV — direct HTTP (no tsdav) for precise error handling.
+// Requirements:
+//   1. 2-Step Verification enabled on the Google account
+//   2. App Password (16 chars) from https://myaccount.google.com/apppasswords
+//   3. Enter full Gmail address + that App Password (NOT the normal Google password)
 
-async function getGoogleClient(email, password) {
-  // Google app passwords are sometimes copied with spaces; normalize safely.
-  const normalizedPassword = String(password).replace(/\s+/g, '').trim();
-  return createDAVClient({
-    // With tsdav, use the root CalDAV endpoint and let principal discovery resolve calendar home.
-    serverUrl: 'https://apidata.googleusercontent.com/caldav/v2/',
-    credentials: { username: email, password: normalizedPassword },
-    authMethod: 'Basic',
-    defaultAccountType: 'caldav',
+const USER_URL = (email) =>
+  `https://apidata.googleusercontent.com/caldav/v2/${encodeURIComponent(email)}/user/`;
+const EVENTS_URL = (email) =>
+  `https://apidata.googleusercontent.com/caldav/v2/${encodeURIComponent(email)}/events/`;
+
+function basicAuth(email, password) {
+  const normalized = String(password).replace(/\s+/g, '');
+  return 'Basic ' + Buffer.from(`${email}:${normalized}`).toString('base64');
+}
+
+function toUtcCompact(iso) {
+  return new Date(iso).toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
+}
+
+async function propfindUser(email, password) {
+  const res = await fetch(USER_URL(email), {
+    method: 'PROPFIND',
+    headers: {
+      Authorization: basicAuth(email, password),
+      'Content-Type': 'application/xml; charset=utf-8',
+      Depth: '0',
+    },
+    body: `<?xml version="1.0" encoding="utf-8"?><propfind xmlns="DAV:"><prop><displayname/></prop></propfind>`,
   });
+
+  if (res.status === 401) {
+    const err = new Error('401');
+    err.status = 401;
+    throw err;
+  }
+  if (res.status === 403) {
+    const err = new Error('403 — CalDAV access may be restricted for this account');
+    err.status = 403;
+    throw err;
+  }
+  if (res.status !== 207 && !res.ok) {
+    const err = new Error(`Unexpected status ${res.status} from Google CalDAV`);
+    err.status = res.status;
+    throw err;
+  }
+  return true;
 }
 
 export const googleCalendar = {
   async listCalendars(email, password) {
-    try {
-      const client = await getGoogleClient(email, password);
-      const calendars = await client.fetchCalendars();
-      if (!calendars || calendars.length === 0) throw new Error('No calendars found');
-      return calendars;
-    } catch (error) {
-      console.error('Failed to list Google calendars:', error.message);
-      throw new Error(`Google Calendar connection failed: ${error.message}`);
-    }
+    await propfindUser(email, password);
+    return [{ displayName: 'Google Calendar', url: EVENTS_URL(email) }];
   },
 
   async checkAvailability(email, password, startTime, endTime) {
     try {
-      const client = await getGoogleClient(email, password);
-      const calendars = await client.fetchCalendars();
-      if (!calendars || calendars.length === 0) return false;
+      const body = `<?xml version="1.0" encoding="utf-8"?>
+<C:calendar-query xmlns:C="urn:ietf:params:xml:ns:caldav" xmlns="DAV:">
+  <prop><getetag/></prop>
+  <C:filter>
+    <C:comp-filter name="VCALENDAR">
+      <C:comp-filter name="VEVENT">
+        <C:time-range start="${toUtcCompact(startTime)}" end="${toUtcCompact(endTime)}"/>
+      </C:comp-filter>
+    </C:comp-filter>
+  </C:filter>
+</C:calendar-query>`;
 
-      const events = await client.fetchCalendarObjects({
-        calendar: calendars[0],
-        timeRange: { start: startTime, end: endTime },
+      const res = await fetch(EVENTS_URL(email), {
+        method: 'REPORT',
+        headers: {
+          Authorization: basicAuth(email, password),
+          'Content-Type': 'application/xml; charset=utf-8',
+          Depth: '1',
+        },
+        body,
       });
-      return events.length > 0;
-    } catch (error) {
-      console.error('Failed to check Google Calendar availability:', error.message);
-      throw error;
+
+      if (!res.ok && res.status !== 207) return false;
+      const text = await res.text();
+      return text.includes('<response>') || text.includes('<d:response>');
+    } catch {
+      return false;
     }
   },
 
   async createEvent(email, password, eventData) {
-    try {
-      const client = await getGoogleClient(email, password);
-      const calendars = await client.fetchCalendars();
-      if (!calendars || calendars.length === 0) throw new Error('No calendars found');
+    const uid = `${Date.now()}-${Math.random().toString(36).slice(2)}@mindfulness-app`;
+    const icsContent = this.buildICS({ ...eventData, uid });
+    const url = `${EVENTS_URL(email)}${uid}.ics`;
 
-      const uid = `${Date.now()}-${Math.random().toString(36).slice(2)}@mindfulness-app`;
-      const icsContent = this.buildICS({ ...eventData, uid });
-      await client.createCalendarObject({
-        calendar: calendars[0],
-        filename: `${uid}.ics`,
-        iCalString: icsContent,
-      });
-      return uid;
-    } catch (error) {
-      console.error('Failed to create Google Calendar event:', error.message);
-      throw error;
-    }
+    const res = await fetch(url, {
+      method: 'PUT',
+      headers: {
+        Authorization: basicAuth(email, password),
+        'Content-Type': 'text/calendar; charset=utf-8',
+      },
+      body: icsContent,
+    });
+
+    if (!res.ok) throw new Error(`Failed to create Google event: ${res.status}`);
+    return uid;
   },
 
   async updateEvent(email, password, eventId, eventData) {
-    try {
-      await this.deleteEvent(email, password, eventId);
-      return await this.createEvent(email, password, eventData);
-    } catch (error) {
-      console.error('Failed to update Google Calendar event:', error.message);
-      throw error;
-    }
+    const icsContent = this.buildICS({ ...eventData, uid: eventId });
+    const url = `${EVENTS_URL(email)}${eventId}.ics`;
+
+    const res = await fetch(url, {
+      method: 'PUT',
+      headers: {
+        Authorization: basicAuth(email, password),
+        'Content-Type': 'text/calendar; charset=utf-8',
+      },
+      body: icsContent,
+    });
+
+    if (res.status === 404) return this.createEvent(email, password, eventData);
+    if (!res.ok) throw new Error(`Failed to update Google event: ${res.status}`);
+    return eventId;
   },
 
   async deleteEvent(email, password, eventId) {
-    try {
-      const client = await getGoogleClient(email, password);
-      const calendars = await client.fetchCalendars();
-      if (!calendars || calendars.length === 0) return;
-
-      const events = await client.fetchCalendarObjects({ calendar: calendars[0] });
-      const match = events.find(e => e.url?.includes(eventId) || e.data?.includes(eventId));
-      if (match) await client.deleteCalendarObject({ calendarObject: match });
-    } catch (error) {
-      console.error('Failed to delete Google Calendar event:', error.message);
-      throw error;
-    }
+    const url = `${EVENTS_URL(email)}${eventId}.ics`;
+    await fetch(url, {
+      method: 'DELETE',
+      headers: { Authorization: basicAuth(email, password) },
+    });
+    // 404 = already deleted; ignore
   },
 
   buildICS(eventData) {
-    // Build a simple iCalendar format event
-    const { summary, description, dtstart, dtend, rrule } = eventData;
+    const { uid, summary, description, dtstart, dtend, rrule } = eventData;
 
     const lines = [
       'BEGIN:VCALENDAR',
       'VERSION:2.0',
       'PRODID:-//Mindfulness Break Reminder//EN',
       'BEGIN:VEVENT',
-      `UID:${Date.now()}@mindfulness-app`,
+      `UID:${uid || Date.now() + '@mindfulness-app'}`,
       `DTSTAMP:${this.formatDateTime(new Date())}`,
       `DTSTART:${this.formatDateTime(new Date(dtstart))}`,
       `DTEND:${this.formatDateTime(new Date(dtend))}`,
