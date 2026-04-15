@@ -58,6 +58,11 @@ app.post('/api/calendar/connect', async (req, res) => {
       }
     } catch (error) {
       console.error(`Credential validation failed for ${provider}:`, error.message);
+      if (provider === 'google') {
+        return res.status(401).json({
+          error: 'Google authentication failed. Use your Gmail address + a 16-character Google App Password (not your normal password).',
+        });
+      }
       return res.status(401).json({ error: 'Invalid email or password' });
     }
 

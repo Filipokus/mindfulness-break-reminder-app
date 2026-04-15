@@ -194,6 +194,9 @@ Update in `api/index.js` if needed.
 - Ensure you're using an **app password**, not your regular password
 - For Google: Generate at myaccount.google.com/apppasswords
 - For Outlook: Generate at account.microsoft.com/security
+- For Google: App Passwords require 2-Step Verification to be enabled on the Google account
+- If your Google account is in Advanced Protection or managed by an organization, App Passwords may be unavailable
+- If Google shows the app password with spaces, you can paste it as-is; the backend normalizes it
 
 ### "No calendars found"
 

@@ -5,9 +5,12 @@ import { createDAVClient } from 'tsdav';
 // Users must generate an App Password at: https://myaccount.google.com/apppasswords
 
 async function getGoogleClient(email, password) {
+  // Google app passwords are sometimes copied with spaces; normalize safely.
+  const normalizedPassword = String(password).replace(/\s+/g, '').trim();
   return createDAVClient({
-    serverUrl: `https://apidata.googleusercontent.com/caldav/v2/${encodeURIComponent(email)}/user/`,
-    credentials: { username: email, password },
+    // With tsdav, use the root CalDAV endpoint and let principal discovery resolve calendar home.
+    serverUrl: 'https://apidata.googleusercontent.com/caldav/v2/',
+    credentials: { username: email, password: normalizedPassword },
     authMethod: 'Basic',
     defaultAccountType: 'caldav',
   });
