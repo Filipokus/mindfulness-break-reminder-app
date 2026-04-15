@@ -1,10 +1,22 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { ArrowLeft, Home, Settings, Plus, X, Coffee, Moon, Users, Briefcase, BookOpen, Palette, Clock, Pause, Play, Check, Download, FlaskConical } from 'lucide-react';
+import confetti from 'canvas-confetti';
+import { ArrowLeft, Home, Settings, Plus, X, Coffee, Moon, Users, Briefcase, BookOpen, Palette, Clock, Pause, Play, Check, Download, FlaskConical, Flame } from 'lucide-react';
 import { getAssignment, isExperimentEnabled } from './experiment';
 import type { ExperimentAssignment, ExperimentVariant } from './experiment';
 import { trackEvent, computeMetrics, exportResultsAsJSON, exportResultsAsCSV, downloadFile } from './analytics';
 import type { ExperimentResults } from './analytics';
+import {
+  isStreaksEnabled,
+  computeStreakState,
+  getGraceDaysRemaining,
+  getNextWindowResetDate,
+  getShownMilestones,
+  markMilestoneShown,
+  MILESTONES,
+  DAILY_MINIMUM,
+} from './streaks';
+import type { StreakState } from './streaks';
 
 type Screen = 'onboarding1' | 'onboarding2' | 'onboarding3' | 'home' | 'break' | 'create' | 'edit' | 'history';
 type Language = 'sv' | 'en';
@@ -92,7 +104,11 @@ const TRANSLATABLE_PHRASES: Array<{ sv: string; en: string }> = [
   { sv: 'Lyssna på musik', en: 'Listen to music' },
   { sv: 'Meditera i 5 min', en: 'Meditate for 5 min' },
   { sv: 'Skriv ner tankar', en: 'Write down thoughts' },
-  { sv: 'Paus', en: 'Break' }
+  { sv: 'Paus', en: 'Break' },
+  // Streaks
+  { sv: 'dagars streak', en: 'day streak' },
+  { sv: 'nådedag kvar', en: 'grace day left' },
+  { sv: 'inga nådedagar kvar', en: 'no grace days left' },
 ];
 
 function translateKnownPhrase(value: string, from: Language, to: Language) {
@@ -183,6 +199,41 @@ export default function App() {
   const [assignment] = useState<ExperimentAssignment>(() => getAssignment());
   // Timestamp when the break screen was shown, used to compute time-to-start
   const breakShownAtRef = useRef<number | null>(null);
+
+  // Streaks feature flag (re-evaluated when toggled in Settings panel)
+  const [streaksEnabled, setStreaksEnabled] = useState(() => isStreaksEnabled());
+
+  // Derived streak state – recomputed whenever completedBreaks changes
+  const streakState = useMemo(() => computeStreakState(completedBreaks), [completedBreaks]);
+
+  // Milestone celebration: track which milestones have been shown to avoid re-celebrating
+  const [pendingMilestone, setPendingMilestone] = useState<number | null>(null);
+
+  // Fire confetti + show badge when a new milestone is reached
+  const triggerCelebration = useCallback((milestone: number) => {
+    const prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (!prefersReduced) {
+      confetti({
+        particleCount: 120,
+        spread: 80,
+        origin: { y: 0.6 },
+        colors: ['#C5D4C0', '#2C2C2A', '#D4CFC3', '#A8BFA3'],
+      });
+    }
+    setPendingMilestone(milestone);
+    markMilestoneShown(milestone);
+  }, []);
+
+  useEffect(() => {
+    if (!streaksEnabled) return;
+    const shown = getShownMilestones();
+    for (const m of streakState.milestonesReached) {
+      if (!shown.includes(m)) {
+        triggerCelebration(m);
+        break; // show one at a time
+      }
+    }
+  }, [streakState.milestonesReached, streaksEnabled, triggerCelebration]);
 
   const updateBreaks = (activity: string, selectedLanguage: Language) => {
     if (assignment.variant === 'adaptive') {
@@ -346,6 +397,8 @@ export default function App() {
                 profile={profile}
                 breaks={breaks}
                 completedBreaks={completedBreaks}
+                streaksEnabled={streaksEnabled}
+                streakState={streakState}
                 onBreakClick={() => {
                   const activeMessage = breaks.find((b) => b.active)?.message || (language === 'sv' ? 'Paus' : 'Break');
                   breakShownAtRef.current = Date.now();
@@ -465,7 +518,24 @@ export default function App() {
                 language={language}
                 completedBreaks={completedBreaks}
                 assignment={assignment}
+                streaksEnabled={streaksEnabled}
+                streakState={streakState}
+                onStreaksToggle={(next: boolean) => {
+                  localStorage.setItem('streaks_v1', next ? 'true' : 'false');
+                  setStreaksEnabled(next);
+                }}
                 onBack={() => setCurrentScreen('home')} 
+              />
+            )}
+          </AnimatePresence>
+
+          {/* Milestone celebration badge */}
+          <AnimatePresence>
+            {pendingMilestone !== null && (
+              <MilestoneBadge
+                milestone={pendingMilestone}
+                language={language}
+                onDismiss={() => setPendingMilestone(null)}
               />
             )}
           </AnimatePresence>
@@ -745,9 +815,14 @@ function Onboarding3({ language, profile, setProfile, onBack, onNext }: any) {
 }
 
 // Home Screen
-function HomeScreen({ language, profile, breaks, completedBreaks, onBreakClick, onCreateClick, onEditClick, onPauseClick, onHistoryClick }: any) {
+function HomeScreen({ language, profile, breaks, completedBreaks, streaksEnabled, streakState, onBreakClick, onCreateClick, onEditClick, onPauseClick, onHistoryClick }: any) {
   const isSv = language === 'sv';
   const firstName = profile.name.split(' ')[0];
+  const graceDaysRemaining = streaksEnabled ? getGraceDaysRemaining(streakState as StreakState) : 0;
+  const nextResetDate = streaksEnabled ? getNextWindowResetDate(streakState as StreakState) : null;
+  const todayUtcBreakCount = completedBreaks.filter(
+    (b: CompletedBreak) => new Date(b.timestamp).toISOString().slice(0, 10) === new Date().toISOString().slice(0, 10)
+  ).length;
   const greeting = () => {
     const hour = new Date().getHours();
     if (hour < 10) return isSv ? 'God morgon' : 'Good morning';
@@ -812,6 +887,55 @@ function HomeScreen({ language, profile, breaks, completedBreaks, onBreakClick, 
       </div>
 
       <div className="flex-1 px-6 sm:px-8 pb-4 sm:pb-6 overflow-y-auto">
+        {/* Streak widget – only visible when feature flag is ON */}
+        {streaksEnabled && (streakState as StreakState).currentStreak > 0 && (
+          <div className="mb-3 sm:mb-4 bg-white rounded-3xl p-3 sm:p-4 flex items-center gap-3 border border-[#E8E4DC]">
+            <div className="flex-shrink-0 w-9 sm:w-10 h-9 sm:h-10 rounded-full bg-[#C5D4C0]/20 flex items-center justify-center">
+              <Flame className="w-4 sm:w-5 h-4 sm:h-5 text-[#C5D4C0]" strokeWidth={1.5} />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="text-sm sm:text-[15px] font-light text-[#2C2C2A]">
+                🔥 {(streakState as StreakState).currentStreak}{' '}
+                {isSv ? 'dagars streak' : `day${(streakState as StreakState).currentStreak === 1 ? '' : 's'} streak`}
+              </div>
+              <div className="text-xs sm:text-[13px] font-light text-[#2C2C2A]/40 mt-0.5">
+                {graceDaysRemaining > 0
+                  ? (isSv ? '1 nådedag kvar' : '1 grace day left')
+                  : (isSv ? 'inga nådedagar kvar' : 'no grace days left')}
+                {nextResetDate && (
+                  <span>
+                    {' · '}
+                    {isSv ? 'Fönster återställs' : 'Window resets'}{' '}
+                    {new Date(nextResetDate + 'T00:00:00Z').toLocaleDateString(isSv ? 'sv-SE' : 'en-GB', { day: 'numeric', month: 'short' })}
+                  </span>
+                )}
+              </div>
+            </div>
+            {todayUtcBreakCount > 0 && (
+              <div className="flex-shrink-0 text-xs sm:text-[13px] font-light text-[#C5D4C0]">
+                {todayUtcBreakCount}/{DAILY_MINIMUM}
+              </div>
+            )}
+          </div>
+        )}
+        {streaksEnabled && (streakState as StreakState).currentStreak === 0 && (
+          <div className="mb-3 sm:mb-4 bg-white rounded-3xl p-3 sm:p-4 flex items-center gap-3 border border-[#E8E4DC] opacity-60">
+            <div className="flex-shrink-0 w-9 sm:w-10 h-9 sm:h-10 rounded-full bg-[#E8E4DC] flex items-center justify-center">
+              <Flame className="w-4 sm:w-5 h-4 sm:h-5 text-[#2C2C2A]/30" strokeWidth={1.5} />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="text-sm sm:text-[15px] font-light text-[#2C2C2A]/60">
+                {isSv ? 'Starta en streak' : 'Start a streak'}
+              </div>
+              <div className="text-xs sm:text-[13px] font-light text-[#2C2C2A]/40 mt-0.5">
+                {isSv
+                  ? `Slutför ${DAILY_MINIMUM} pauser om dagen för att bygga en streak`
+                  : `Complete ${DAILY_MINIMUM} breaks a day to build a streak`}
+              </div>
+            </div>
+          </div>
+        )}
+
         <div className="flex items-center justify-between mb-3 sm:mb-4">
           <p className="text-xs sm:text-[15px] font-light text-[#2C2C2A]/50">{isSv ? 'Dina stunder idag' : 'Your moments today'}</p>
           <button 
@@ -1276,10 +1400,13 @@ function BreakScreen({ language, message, onStart, onComplete, onCancel }: { lan
 }
 
 // History Screen
-function HistoryScreen({ language, completedBreaks, assignment, onBack }: {
+function HistoryScreen({ language, completedBreaks, assignment, streaksEnabled, streakState, onStreaksToggle, onBack }: {
   language: Language;
   completedBreaks: CompletedBreak[];
   assignment: ExperimentAssignment;
+  streaksEnabled: boolean;
+  streakState: StreakState;
+  onStreaksToggle: (next: boolean) => void;
   onBack: () => void;
 }) {
   const isSv = language === 'sv';
@@ -1407,6 +1534,54 @@ function HistoryScreen({ language, completedBreaks, assignment, onBack }: {
               </div>
             </div>
 
+            {/* Streak history – day-by-day breakdown when feature flag is ON */}
+            {streaksEnabled && streakState.dayStatuses.length > 0 && (
+              <div className="mb-6 sm:mb-8">
+                <div className="flex items-center gap-2 mb-3 sm:mb-4">
+                  <Flame className="w-3.5 sm:w-4 h-3.5 sm:h-4 text-[#C5D4C0]" strokeWidth={1.5} />
+                  <p className="text-xs sm:text-[13px] font-light text-[#2C2C2A]/50 uppercase tracking-wide">
+                    {isSv ? 'Streakhistorik' : 'Streak history'}
+                  </p>
+                </div>
+                <div className="space-y-1 sm:space-y-1.5">
+                  {[...streakState.dayStatuses].reverse().slice(0, 14).map((ds) => (
+                    <div key={ds.date} className="bg-white rounded-2xl p-3 sm:p-3.5 flex items-center gap-3">
+                      <div className={`flex-shrink-0 w-6 sm:w-7 h-6 sm:h-7 rounded-full flex items-center justify-center text-sm ${
+                        ds.status === 'completed'
+                          ? 'bg-[#C5D4C0]/30'
+                          : ds.status === 'grace_used'
+                          ? 'bg-amber-100'
+                          : 'bg-red-50'
+                      }`}>
+                        {ds.status === 'completed' ? '✅' : ds.status === 'grace_used' ? '⚡' : '❌'}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="text-xs sm:text-[13px] font-light text-[#2C2C2A]">
+                          {new Date(ds.date + 'T00:00:00Z').toLocaleDateString(isSv ? 'sv-SE' : 'en-GB', {
+                            weekday: 'short',
+                            day: 'numeric',
+                            month: 'short',
+                          })}
+                        </div>
+                        <div className="text-[10px] sm:text-xs font-light text-[#2C2C2A]/40 mt-0.5">
+                          {ds.status === 'completed'
+                            ? (isSv ? `${ds.breakCount} pauser avklarade` : `${ds.breakCount} breaks completed`)
+                            : ds.status === 'grace_used'
+                            ? (isSv ? 'Nådedag använd' : 'Grace day used')
+                            : (isSv ? 'Missad' : 'Missed')}
+                        </div>
+                      </div>
+                      {ds.streakDayNumber > 0 && (
+                        <div className="flex-shrink-0 text-xs sm:text-[13px] font-light text-[#C5D4C0]">
+                          🔥{ds.streakDayNumber}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             <div className="space-y-4 sm:space-y-6 pb-6">
               {Object.entries(groupedBreaks).reverse().map(([date, breaks]: [string, any]) => (
                 <div key={date}>
@@ -1488,6 +1663,29 @@ function HistoryScreen({ language, completedBreaks, assignment, onBack }: {
             </button>
           </div>
 
+          {/* Streaks feature flag toggle */}
+          <div className="flex items-center justify-between mb-3 sm:mb-4">
+            <div className="flex items-center gap-2">
+              <Flame className="w-3.5 sm:w-4 h-3.5 sm:h-4 text-[#C5D4C0]" strokeWidth={1.5} />
+              <span className="text-xs sm:text-[13px] font-light text-[#2C2C2A]/70">
+                streaks_v1
+              </span>
+            </div>
+            <button
+              onClick={() => onStreaksToggle(!streaksEnabled)}
+              className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-light border transition-colors ${
+                streaksEnabled
+                  ? 'border-[#C5D4C0] text-[#2C2C2A] bg-[#C5D4C0]/10'
+                  : 'border-[#E8E4DC] text-[#2C2C2A]/40 bg-white'
+              }`}
+            >
+              <span className={`w-1.5 h-1.5 rounded-full ${streaksEnabled ? 'bg-[#C5D4C0]' : 'bg-[#E8E4DC]'}`} />
+              {streaksEnabled
+                ? (isSv ? 'Aktiv' : 'Active')
+                : (isSv ? 'Av' : 'Off')}
+            </button>
+          </div>
+
           {/* Per-variant metrics */}
           <div className="space-y-2 sm:space-y-3 mb-4 sm:mb-5">
             {metrics.variants.map((v) => (
@@ -1564,6 +1762,62 @@ function HistoryScreen({ language, completedBreaks, assignment, onBack }: {
           </div>
         </div>
       </div>
+    </motion.div>
+  );
+}
+
+// Milestone Badge – animated overlay shown when a streak milestone is reached
+function MilestoneBadge({ milestone, language, onDismiss }: {
+  milestone: number;
+  language: Language;
+  onDismiss: () => void;
+}) {
+  const isSv = language === 'sv';
+
+  const emoji = milestone >= 30 ? '🏆' : milestone >= 21 ? '🥇' : milestone >= 14 ? '🥈' : '🥉';
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="absolute inset-0 z-50 flex items-center justify-center bg-[#2C2C2A]/40 backdrop-blur-sm"
+      onClick={onDismiss}
+      role="dialog"
+      aria-modal="true"
+      aria-label={isSv ? `Milstolpe: ${milestone} dagars streak` : `Milestone: ${milestone} day streak`}
+    >
+      <motion.div
+        initial={{ scale: 0.7, opacity: 0, y: 20 }}
+        animate={{ scale: 1, opacity: 1, y: 0 }}
+        exit={{ scale: 0.7, opacity: 0, y: 20 }}
+        transition={{ type: 'spring', stiffness: 300, damping: 22 }}
+        onClick={(e) => e.stopPropagation()}
+        className="bg-[#FAFAF8] rounded-[28px] p-8 sm:p-10 mx-6 text-center shadow-2xl max-w-xs w-full"
+      >
+        <motion.div
+          animate={{ rotate: [0, -10, 10, -8, 8, -4, 4, 0] }}
+          transition={{ duration: 0.7, delay: 0.1 }}
+          className="text-5xl sm:text-6xl mb-4"
+          aria-hidden="true"
+        >
+          {emoji}
+        </motion.div>
+        <h2 className="text-xl sm:text-2xl font-light text-[#2C2C2A] mb-2">
+          {isSv ? `🔥 ${milestone} dagars streak!` : `🔥 ${milestone} day streak!`}
+        </h2>
+        <p className="text-sm sm:text-[15px] font-light text-[#2C2C2A]/60 mb-6">
+          {isSv
+            ? 'Fantastisk konsekvens! Fortsätt ta hand om dig.'
+            : 'Amazing consistency! Keep taking care of yourself.'}
+        </p>
+        <button
+          onClick={onDismiss}
+          className="w-full py-3 sm:py-4 bg-[#C5D4C0] text-[#2C2C2A] rounded-full text-sm sm:text-[15px] font-light"
+        >
+          {isSv ? 'Tack!' : 'Thank you!'}
+        </button>
+      </motion.div>
     </motion.div>
   );
 }
