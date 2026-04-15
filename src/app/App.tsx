@@ -106,7 +106,8 @@ const TRANSLATABLE_PHRASES: Array<{ sv: string; en: string }> = [
   { sv: 'Skriv ner tankar', en: 'Write down thoughts' },
   { sv: 'Paus', en: 'Break' },
   // Streaks
-  { sv: 'dagars streak', en: 'day streak' },
+  { sv: 'dags streak', en: 'day streak' },
+  { sv: 'dagars streak', en: 'days streak' },
   { sv: 'nådedag kvar', en: 'grace day left' },
   { sv: 'inga nådedagar kvar', en: 'no grace days left' },
 ];
@@ -208,11 +209,14 @@ export default function App() {
 
   // Milestone celebration: track which milestones have been shown to avoid re-celebrating
   const [pendingMilestone, setPendingMilestone] = useState<number | null>(null);
+  // Capture prefers-reduced-motion once per mount (changes extremely rarely during a session)
+  const prefersReducedMotionRef = useRef(
+    typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  );
 
   // Fire confetti + show badge when a new milestone is reached
   const triggerCelebration = useCallback((milestone: number) => {
-    const prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    if (!prefersReduced) {
+    if (!prefersReducedMotionRef.current) {
       confetti({
         particleCount: 120,
         spread: 80,
@@ -820,8 +824,9 @@ function HomeScreen({ language, profile, breaks, completedBreaks, streaksEnabled
   const firstName = profile.name.split(' ')[0];
   const graceDaysRemaining = streaksEnabled ? getGraceDaysRemaining(streakState as StreakState) : 0;
   const nextResetDate = streaksEnabled ? getNextWindowResetDate(streakState as StreakState) : null;
+  const todayUtcDate = new Date().toISOString().slice(0, 10);
   const todayUtcBreakCount = completedBreaks.filter(
-    (b: CompletedBreak) => new Date(b.timestamp).toISOString().slice(0, 10) === new Date().toISOString().slice(0, 10)
+    (b: CompletedBreak) => new Date(b.timestamp).toISOString().slice(0, 10) === todayUtcDate
   ).length;
   const greeting = () => {
     const hour = new Date().getHours();
@@ -896,7 +901,9 @@ function HomeScreen({ language, profile, breaks, completedBreaks, streaksEnabled
             <div className="flex-1 min-w-0">
               <div className="text-sm sm:text-[15px] font-light text-[#2C2C2A]">
                 🔥 {(streakState as StreakState).currentStreak}{' '}
-                {isSv ? 'dagars streak' : `day${(streakState as StreakState).currentStreak === 1 ? '' : 's'} streak`}
+                {isSv
+                  ? ((streakState as StreakState).currentStreak === 1 ? 'dags streak' : 'dagars streak')
+                  : `day${(streakState as StreakState).currentStreak === 1 ? '' : 's'} streak`}
               </div>
               <div className="text-xs sm:text-[13px] font-light text-[#2C2C2A]/40 mt-0.5">
                 {graceDaysRemaining > 0
@@ -1544,7 +1551,7 @@ function HistoryScreen({ language, completedBreaks, assignment, streaksEnabled, 
                   </p>
                 </div>
                 <div className="space-y-1 sm:space-y-1.5">
-                  {[...streakState.dayStatuses].reverse().slice(0, 14).map((ds) => (
+                  {streakState.dayStatuses.slice(-14).reverse().map((ds) => (
                     <div key={ds.date} className="bg-white rounded-2xl p-3 sm:p-3.5 flex items-center gap-3">
                       <div className={`flex-shrink-0 w-6 sm:w-7 h-6 sm:h-7 rounded-full flex items-center justify-center text-sm ${
                         ds.status === 'completed'
@@ -1785,7 +1792,7 @@ function MilestoneBadge({ milestone, language, onDismiss }: {
       onClick={onDismiss}
       role="dialog"
       aria-modal="true"
-      aria-label={isSv ? `Milstolpe: ${milestone} dagars streak` : `Milestone: ${milestone} day streak`}
+      aria-label={isSv ? `Milstolpe: ${milestone} ${milestone === 1 ? 'dags' : 'dagars'} streak` : `Milestone: ${milestone} day${milestone === 1 ? '' : 's'} streak`}
     >
       <motion.div
         initial={{ scale: 0.7, opacity: 0, y: 20 }}
@@ -1804,7 +1811,7 @@ function MilestoneBadge({ milestone, language, onDismiss }: {
           {emoji}
         </motion.div>
         <h2 className="text-xl sm:text-2xl font-light text-[#2C2C2A] mb-2">
-          {isSv ? `🔥 ${milestone} dagars streak!` : `🔥 ${milestone} day streak!`}
+          {isSv ? `🔥 ${milestone} ${milestone === 1 ? 'dags' : 'dagars'} streak!` : `🔥 ${milestone} day${milestone === 1 ? '' : 's'} streak!`}
         </h2>
         <p className="text-sm sm:text-[15px] font-light text-[#2C2C2A]/60 mb-6">
           {isSv

@@ -129,7 +129,7 @@ export function computeStreakState(
   let streak = 0;
   let graceUsedInWindow = false;
   let windowStartDate = firstDate;
-  const milestonesReached: number[] = [];
+  const milestonesReachedSet = new Set<number>();
   const dayStatuses: DayStatus[] = [];
 
   let d = firstDate;
@@ -146,8 +146,8 @@ export function computeStreakState(
     if (count >= DAILY_MINIMUM) {
       streak++;
       status = 'completed';
-      if (MILESTONES.includes(streak) && !milestonesReached.includes(streak)) {
-        milestonesReached.push(streak);
+      if (MILESTONES.includes(streak) && !milestonesReachedSet.has(streak)) {
+        milestonesReachedSet.add(streak);
       }
     } else if (!graceUsedInWindow) {
       // Consume the grace day – streak does not increment but is not reset.
@@ -165,7 +165,7 @@ export function computeStreakState(
     d = addDays(d, 1);
   }
 
-  return { currentStreak: streak, graceUsedInWindow, windowStartDate, milestonesReached, dayStatuses };
+  return { currentStreak: streak, graceUsedInWindow, windowStartDate, milestonesReached: [...milestonesReachedSet].sort((a, b) => a - b), dayStatuses };
 }
 
 // ─── Derived helpers ──────────────────────────────────────────────────────────
