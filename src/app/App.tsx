@@ -1,9 +1,19 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { ArrowLeft, Home, Settings, Plus, X, Coffee, Moon, Users, Briefcase, BookOpen, Palette, Clock, Pause, Play, Check } from 'lucide-react';
+import { ArrowLeft, Home, Settings, Plus, X, Coffee, Moon, Users, Briefcase, BookOpen, Palette, Clock, Pause, Play, Check, Download, FlaskConical } from 'lucide-react';
+import { getAssignment, isExperimentEnabled } from './experiment';
+import type { ExperimentAssignment, ExperimentVariant } from './experiment';
+import { trackEvent, computeMetrics, exportResultsAsJSON, exportResultsAsCSV, downloadFile } from './analytics';
+import type { ExperimentResults } from './analytics';
 
 type Screen = 'onboarding1' | 'onboarding2' | 'onboarding3' | 'home' | 'break' | 'create' | 'edit' | 'history';
 type Language = 'sv' | 'en';
+
+interface CompletedBreak {
+  timestamp: string;
+  message: string;
+  duration: number;
+}
 
 interface Break {
   time: string;
@@ -103,6 +113,55 @@ function getInitialBreaks(language: Language): Break[] {
   ];
 }
 
+// Minimum completions required before adaptive scheduling kicks in (below this threshold
+// the data is too sparse to produce a meaningful preference signal).
+const MIN_COMPLETIONS_FOR_ADAPTIVE = 3;
+
+// Earliest and latest hours (inclusive) considered for adaptive break scheduling.
+// Keeps suggested breaks within a sensible daytime window.
+const ADAPTIVE_WINDOW_START_HOUR = 7;
+const ADAPTIVE_WINDOW_END_HOUR = 21;
+
+// Computes adaptive break times based on historical completion data.
+// Falls back to static defaults when there are fewer than MIN_COMPLETIONS_FOR_ADAPTIVE entries.
+function computeAdaptiveBreaks(
+  completedBreaks: CompletedBreak[],
+  activity: string,
+  language: Language,
+  frequency: number
+): Break[] {
+  if (completedBreaks.length < MIN_COMPLETIONS_FOR_ADAPTIVE) {
+    return getInitialBreaks(language);
+  }
+
+  // Tally completions by hour-of-day to find peak engagement windows
+  const hourCounts: number[] = Array(24).fill(0);
+  completedBreaks.forEach((b) => {
+    const hour = new Date(b.timestamp).getHours();
+    hourCounts[hour]++;
+  });
+
+  // Restrict candidate hours to the configured daytime window
+  const candidates: { hour: number; count: number }[] = [];
+  for (let h = ADAPTIVE_WINDOW_START_HOUR; h <= ADAPTIVE_WINDOW_END_HOUR; h++) {
+    candidates.push({ hour: h, count: hourCounts[h] });
+  }
+  candidates.sort((a, b) => b.count - a.count);
+
+  const targetCount = Math.min(frequency, candidates.length);
+  const topHours = candidates
+    .slice(0, targetCount)
+    .map((c) => c.hour)
+    .sort((a, b) => a - b);
+
+  const suggestions = (BREAK_SUGGESTIONS[activity] || BREAK_SUGGESTIONS.home)[language];
+  return topHours.map((hour, i) => ({
+    time: `${hour.toString().padStart(2, '0')}:00`,
+    message: suggestions[i % suggestions.length],
+    active: i === 0,
+  }));
+}
+
 export default function App() {
   const [language, setLanguage] = useState<Language>(() => {
     const savedLanguage = localStorage.getItem('language');
@@ -118,9 +177,25 @@ export default function App() {
   const [breaks, setBreaks] = useState<Break[]>(() => getInitialBreaks(language));
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [history, setHistory] = useState<{ time: string, message: string }[]>([]);
-  const [completedBreaks, setCompletedBreaks] = useState<{ timestamp: string, message: string, duration: number }[]>([]);
+  const [completedBreaks, setCompletedBreaks] = useState<CompletedBreak[]>([]);
+
+  // Experiment: stable assignment (userId + variant) persisted in localStorage
+  const [assignment] = useState<ExperimentAssignment>(() => getAssignment());
+  // Timestamp when the break screen was shown, used to compute time-to-start
+  const breakShownAtRef = useRef<number | null>(null);
 
   const updateBreaks = (activity: string, selectedLanguage: Language) => {
+    if (assignment.variant === 'adaptive') {
+      const adaptive = computeAdaptiveBreaks(
+        completedBreaks,
+        activity,
+        selectedLanguage,
+        profile.suggestedFrequency
+      );
+      setBreaks(adaptive);
+      return;
+    }
+
     const suggestions = (BREAK_SUGGESTIONS[activity] || BREAK_SUGGESTIONS.home)[selectedLanguage];
     const times = activity === 'office' || activity === 'student' 
       ? ['10:30', '13:00', '15:30', '17:00'] 
@@ -271,13 +346,37 @@ export default function App() {
                 profile={profile}
                 breaks={breaks}
                 completedBreaks={completedBreaks}
-                onBreakClick={() => setCurrentScreen('break')}
+                onBreakClick={() => {
+                  const activeMessage = breaks.find((b) => b.active)?.message || (language === 'sv' ? 'Paus' : 'Break');
+                  breakShownAtRef.current = Date.now();
+                  trackEvent({
+                    timestamp: new Date().toISOString(),
+                    eventType: 'break_shown',
+                    experimentVariant: assignment.variant,
+                    language,
+                    userId: assignment.userId,
+                    breakMessage: activeMessage,
+                  });
+                  setCurrentScreen('break');
+                }}
                 onCreateClick={() => setCurrentScreen('create')}
                 onEditClick={(index: number) => {
                   setEditingIndex(index);
                   setCurrentScreen('edit');
                 }}
-                onPauseClick={() => setCurrentScreen('break')}
+                onPauseClick={() => {
+                  const activeMessage = breaks.find((b) => b.active)?.message || (language === 'sv' ? 'Paus' : 'Break');
+                  breakShownAtRef.current = Date.now();
+                  trackEvent({
+                    timestamp: new Date().toISOString(),
+                    eventType: 'break_shown',
+                    experimentVariant: assignment.variant,
+                    language,
+                    userId: assignment.userId,
+                    breakMessage: activeMessage,
+                  });
+                  setCurrentScreen('break');
+                }}
                 onHistoryClick={() => setCurrentScreen('history')}
               />
             )}
@@ -286,15 +385,50 @@ export default function App() {
                 key="break"
                 language={language}
                 message={breaks.find(b => b.active)?.message || (language === 'sv' ? 'Paus' : 'Break')}
+                onStart={() => {
+                  const shownAt = breakShownAtRef.current;
+                  const timeToStartSeconds = shownAt !== null
+                    ? Math.round((Date.now() - shownAt) / 1000)
+                    : undefined;
+                  trackEvent({
+                    timestamp: new Date().toISOString(),
+                    eventType: 'break_start',
+                    experimentVariant: assignment.variant,
+                    language,
+                    userId: assignment.userId,
+                    breakMessage: breaks.find((b) => b.active)?.message,
+                    timeToStartSeconds,
+                  });
+                }}
                 onComplete={(duration) => {
                   const now = new Date();
                   const timeString = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
                   const activeMessage = breaks.find((b) => b.active)?.message || (language === 'sv' ? 'Paus' : 'Break');
+                  trackEvent({
+                    timestamp: now.toISOString(),
+                    eventType: 'break_complete',
+                    experimentVariant: assignment.variant,
+                    language,
+                    userId: assignment.userId,
+                    breakMessage: activeMessage,
+                    durationSeconds: duration,
+                  });
                   setHistory([...history, { time: timeString, message: activeMessage }]);
                   setCompletedBreaks([...completedBreaks, { timestamp: now.toISOString(), message: activeMessage, duration }]);
                   setCurrentScreen('home');
                 }} 
-                onCancel={() => setCurrentScreen('home')}
+                onCancel={(wasActive) => {
+                  trackEvent({
+                    timestamp: new Date().toISOString(),
+                    eventType: 'break_skip',
+                    experimentVariant: assignment.variant,
+                    language,
+                    userId: assignment.userId,
+                    breakMessage: breaks.find((b) => b.active)?.message,
+                    wasStarted: wasActive,
+                  });
+                  setCurrentScreen('home');
+                }}
               />
             )}
             {currentScreen === 'create' && (
@@ -330,6 +464,7 @@ export default function App() {
                 key="history"
                 language={language}
                 completedBreaks={completedBreaks}
+                assignment={assignment}
                 onBack={() => setCurrentScreen('home')} 
               />
             )}
@@ -1015,7 +1150,7 @@ function EditBreakScreen({ language, breakItem, onSave, onDelete, onBack }: any)
 }
 
 // Break Screen
-function BreakScreen({ language, message, onComplete, onCancel }: { language: Language; message: string; onComplete: (duration: number) => void; onCancel: () => void }) {
+function BreakScreen({ language, message, onStart, onComplete, onCancel }: { language: Language; message: string; onStart: () => void; onComplete: (duration: number) => void; onCancel: (wasActive: boolean) => void }) {
   const isSv = language === 'sv';
   const [isActive, setIsActive] = useState(false);
   const [seconds, setSeconds] = useState(0);
@@ -1102,14 +1237,14 @@ function BreakScreen({ language, message, onComplete, onCancel }: { language: La
         {!isActive ? (
           <>
             <button 
-              onClick={() => setIsActive(true)}
+              onClick={() => { setIsActive(true); onStart(); }}
               className="w-full py-3 sm:py-5 bg-[#2C2C2A] text-[#FAFAF8] rounded-full text-sm sm:text-[17px] font-light flex items-center justify-center gap-2"
             >
               <Play className="w-4 sm:w-5 h-4 sm:h-5" strokeWidth={1.5} fill="currentColor" />
               {isSv ? 'Starta' : 'Start'}
             </button>
             <button 
-              onClick={onCancel}
+              onClick={() => onCancel(false)}
               className="w-full py-2 sm:py-3 text-[#2C2C2A]/40 text-xs sm:text-[15px] font-light"
             >
               {isSv ? 'Avbryt' : 'Cancel'}
@@ -1128,7 +1263,7 @@ function BreakScreen({ language, message, onComplete, onCancel }: { language: La
               {isSv ? 'Klar' : 'Done'}
             </button>
             <button 
-              onClick={onCancel}
+              onClick={() => onCancel(true)}
               className="w-full py-2 sm:py-3 text-[#2C2C2A]/40 text-xs sm:text-[15px] font-light"
             >
               {isSv ? 'Hoppa över' : 'Skip'}
@@ -1141,8 +1276,16 @@ function BreakScreen({ language, message, onComplete, onCancel }: { language: La
 }
 
 // History Screen
-function HistoryScreen({ language, completedBreaks, onBack }: any) {
+function HistoryScreen({ language, completedBreaks, assignment, onBack }: {
+  language: Language;
+  completedBreaks: CompletedBreak[];
+  assignment: ExperimentAssignment;
+  onBack: () => void;
+}) {
   const isSv = language === 'sv';
+  const [experimentEnabled, setExperimentEnabled] = useState(() => isExperimentEnabled());
+  const [metrics, setMetrics] = useState<ExperimentResults>(() => computeMetrics());
+
   const getTodayBreaks = () => {
     const today = new Date().toDateString();
     return completedBreaks.filter((b: CompletedBreak) => 
@@ -1183,6 +1326,28 @@ function HistoryScreen({ language, completedBreaks, onBack }: any) {
   };
 
   const groupedBreaks = groupByDate();
+
+  const handleToggleExperiment = () => {
+    const next = !experimentEnabled;
+    localStorage.setItem('adaptive_scheduler_v1', next ? 'true' : 'false');
+    setExperimentEnabled(next);
+  };
+
+  const handleExportJSON = () => {
+    const json = exportResultsAsJSON();
+    downloadFile(json, 'experiment-results.json', 'application/json');
+  };
+
+  const handleExportCSV = () => {
+    const csv = exportResultsAsCSV();
+    downloadFile(csv, 'experiment-results.csv', 'text/csv');
+  };
+
+  const refreshMetrics = () => setMetrics(computeMetrics());
+
+  const formatRate = (rate: number) => `${(rate * 100).toFixed(0)}%`;
+  const formatSeconds = (s: number | null) =>
+    s !== null ? (s < 60 ? `${s}s` : `${Math.round(s / 60)}m`) : '—';
 
   return (
     <motion.div
@@ -1276,6 +1441,128 @@ function HistoryScreen({ language, completedBreaks, onBack }: any) {
             </div>
           </>
         )}
+
+        {/* Experiment panel */}
+        <div className="border-t border-[#E8E4DC] pt-4 sm:pt-6 pb-6 sm:pb-8">
+          <div className="flex items-center justify-between gap-2 mb-3 sm:mb-4">
+            <div className="flex items-center gap-2">
+              <FlaskConical className="w-3.5 sm:w-4 h-3.5 sm:h-4 text-[#C5D4C0]" strokeWidth={1.5} />
+              <p className="text-xs sm:text-[13px] font-light text-[#2C2C2A]/50 uppercase tracking-wide">
+                {isSv ? 'Experiment' : 'Experiment'}
+              </p>
+            </div>
+            <button
+              onClick={refreshMetrics}
+              className="text-[10px] sm:text-xs font-light text-[#2C2C2A]/40 hover:text-[#2C2C2A] transition-colors"
+            >
+              {isSv ? 'Uppdatera' : 'Refresh'}
+            </button>
+          </div>
+
+          {/* Variant badge + feature flag toggle */}
+          <div className="flex items-center justify-between mb-3 sm:mb-4">
+            <div className="flex items-center gap-2">
+              <span className="text-xs sm:text-[13px] font-light text-[#2C2C2A]/70">
+                {isSv ? 'Din variant:' : 'Your variant:'}
+              </span>
+              <span className={`px-2 py-0.5 rounded-full text-xs font-light ${
+                assignment.variant === 'adaptive'
+                  ? 'bg-[#C5D4C0]/40 text-[#2C2C2A]'
+                  : 'bg-[#E8E4DC] text-[#2C2C2A]/60'
+              }`}>
+                {assignment.variant}
+              </span>
+            </div>
+            <button
+              onClick={handleToggleExperiment}
+              className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-light border transition-colors ${
+                experimentEnabled
+                  ? 'border-[#C5D4C0] text-[#2C2C2A] bg-[#C5D4C0]/10'
+                  : 'border-[#E8E4DC] text-[#2C2C2A]/40 bg-white'
+              }`}
+            >
+              <span className={`w-1.5 h-1.5 rounded-full ${experimentEnabled ? 'bg-[#C5D4C0]' : 'bg-[#E8E4DC]'}`} />
+              {experimentEnabled
+                ? (isSv ? 'Aktiv' : 'Active')
+                : (isSv ? 'Stoppad' : 'Stopped')}
+            </button>
+          </div>
+
+          {/* Per-variant metrics */}
+          <div className="space-y-2 sm:space-y-3 mb-4 sm:mb-5">
+            {metrics.variants.map((v) => (
+              <div key={v.variant} className="bg-white rounded-2xl p-3 sm:p-4">
+                <div className="flex items-center justify-between mb-2 sm:mb-3">
+                  <span className="text-xs sm:text-[13px] font-light text-[#2C2C2A] uppercase tracking-wide">
+                    {v.variant}
+                  </span>
+                  <span className="text-xs font-light text-[#2C2C2A]/40">
+                    {v.totalBreaksShown} {isSv ? 'visade' : 'shown'}
+                  </span>
+                </div>
+                <div className="grid grid-cols-4 gap-1">
+                  <div className="text-center">
+                    <div className="text-sm sm:text-[15px] font-light text-[#2C2C2A]">
+                      {formatRate(v.completionRate)}
+                    </div>
+                    <div className="text-[10px] sm:text-xs font-light text-[#2C2C2A]/40 mt-0.5">
+                      {isSv ? 'avklarat' : 'complete'}
+                    </div>
+                  </div>
+                  <div className="text-center">
+                    <div className="text-sm sm:text-[15px] font-light text-[#2C2C2A]">
+                      {formatRate(v.skipRate)}
+                    </div>
+                    <div className="text-[10px] sm:text-xs font-light text-[#2C2C2A]/40 mt-0.5">
+                      {isSv ? 'hoppat' : 'skipped'}
+                    </div>
+                  </div>
+                  <div className="text-center">
+                    <div className="text-sm sm:text-[15px] font-light text-[#2C2C2A]">
+                      {formatSeconds(v.medianTimeToStartSeconds)}
+                    </div>
+                    <div className="text-[10px] sm:text-xs font-light text-[#2C2C2A]/40 mt-0.5">
+                      {isSv ? 'tid till start' : 'time to start'}
+                    </div>
+                  </div>
+                  <div className="text-center">
+                    <div className="text-sm sm:text-[15px] font-light text-[#2C2C2A]">
+                      {v.sevenDayRetention}d
+                    </div>
+                    <div className="text-[10px] sm:text-xs font-light text-[#2C2C2A]/40 mt-0.5">
+                      {isSv ? '7d aktiv' : '7d active'}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ))}
+            {metrics.daysSinceFirstEvent !== null && (
+              <p className="text-[10px] sm:text-xs font-light text-[#2C2C2A]/30 text-center">
+                {isSv
+                  ? `Experiment startade för ${metrics.daysSinceFirstEvent} dag${metrics.daysSinceFirstEvent === 1 ? '' : 'ar'} sedan`
+                  : `Experiment started ${metrics.daysSinceFirstEvent} day${metrics.daysSinceFirstEvent === 1 ? '' : 's'} ago`}
+              </p>
+            )}
+          </div>
+
+          {/* Export buttons */}
+          <div className="flex gap-2">
+            <button
+              onClick={handleExportJSON}
+              className="flex-1 flex items-center justify-center gap-1.5 py-2 sm:py-2.5 bg-white border border-[#E8E4DC] rounded-full text-xs sm:text-[13px] font-light text-[#2C2C2A]/60 hover:border-[#C5D4C0] hover:text-[#2C2C2A] transition-colors"
+            >
+              <Download className="w-3 sm:w-3.5 h-3 sm:h-3.5" strokeWidth={1.5} />
+              JSON
+            </button>
+            <button
+              onClick={handleExportCSV}
+              className="flex-1 flex items-center justify-center gap-1.5 py-2 sm:py-2.5 bg-white border border-[#E8E4DC] rounded-full text-xs sm:text-[13px] font-light text-[#2C2C2A]/60 hover:border-[#C5D4C0] hover:text-[#2C2C2A] transition-colors"
+            >
+              <Download className="w-3 sm:w-3.5 h-3 sm:h-3.5" strokeWidth={1.5} />
+              CSV
+            </button>
+          </div>
+        </div>
       </div>
     </motion.div>
   );
