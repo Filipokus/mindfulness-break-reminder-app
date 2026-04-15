@@ -10,7 +10,7 @@ export interface UserData {
   };
   breaks: { time: string; message: string; active: boolean }[];
   history: { time: string; message: string }[];
-  completedBreaks: { timestamp: string; message: string; duration: number }[];
+  completedBreaks: { timestamp: string; message: string; duration: number; energyLevel?: 'low' | 'medium' | 'high' | null }[];
   language: 'sv' | 'en';
 }
 
