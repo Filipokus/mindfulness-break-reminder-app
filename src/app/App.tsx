@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { ArrowLeft, Home, Settings, Plus, X, Coffee, Moon, Users, Briefcase, BookOpen, Palette, Clock, Pause, Play, Check } from 'lucide-react';
 
 type Screen = 'onboarding1' | 'onboarding2' | 'onboarding3' | 'home' | 'break' | 'create' | 'edit' | 'history';
+type Language = 'sv' | 'en';
 
 interface Break {
   time: string;
@@ -17,34 +18,110 @@ interface UserProfile {
   suggestedFrequency: number;
 }
 
+const ACTIVITY_RECOMMENDATIONS: Record<string, number> = {
+  office: 4,
+  student: 4,
+  creative: 3,
+  physical: 3,
+  home: 2,
+  evening: 2
+};
+
+const BREAK_SUGGESTIONS: Record<string, Record<Language, string[]>> = {
+  office: {
+    sv: ['En kort promenad?', 'Stretch vid skrivbordet', 'Titta ut genom fönstret'],
+    en: ['A short walk?', 'Desk stretch break', 'Look out the window']
+  },
+  student: {
+    sv: ['Rörelse mellan studierna', 'Lunch utan skärm', 'Frisk luft en stund'],
+    en: ['Move between study sessions', 'Screen-free lunch', 'Fresh air break']
+  },
+  creative: {
+    sv: ['Vila ögonen', 'Kaffe och reflektion', 'Skissa något annat'],
+    en: ['Rest your eyes', 'Coffee and reflection', 'Sketch something else']
+  },
+  physical: {
+    sv: ['Drick vatten', 'Sitt ner en stund', 'Stretcha mjukt'],
+    en: ['Drink water', 'Sit down for a moment', 'Gentle stretch']
+  },
+  home: {
+    sv: ['Gå ut en stund', 'Kaffe eller te', 'Bara sitta still'],
+    en: ['Step outside for a bit', 'Coffee or tea', 'Just sit still']
+  },
+  evening: {
+    sv: ['Koppla av från skärmar', 'Kvällspromenad', 'Läs några sidor'],
+    en: ['Unplug from screens', 'Evening walk', 'Read a few pages']
+  }
+};
+
+const TRANSLATABLE_PHRASES: Array<{ sv: string; en: string }> = [
+  { sv: 'Kaffe eller te', en: 'Coffee or tea' },
+  { sv: 'Gå ut en stund', en: 'Step outside for a bit' },
+  { sv: 'Andas och stretcha', en: 'Breathe and stretch' },
+  { sv: 'Vila ögonen', en: 'Rest your eyes' },
+  { sv: 'En kort promenad?', en: 'A short walk?' },
+  { sv: 'Lunch utan skärm', en: 'Screen-free lunch' },
+  { sv: 'Tre djupa andetag', en: 'Three deep breaths' },
+  { sv: 'Stretch vid skrivbordet', en: 'Desk stretch break' },
+  { sv: 'Titta ut genom fönstret', en: 'Look out the window' },
+  { sv: 'Rörelse mellan studierna', en: 'Move between study sessions' },
+  { sv: 'Frisk luft en stund', en: 'Fresh air break' },
+  { sv: 'Kaffe och reflektion', en: 'Coffee and reflection' },
+  { sv: 'Skissa något annat', en: 'Sketch something else' },
+  { sv: 'Drick vatten', en: 'Drink water' },
+  { sv: 'Sitt ner en stund', en: 'Sit down for a moment' },
+  { sv: 'Stretcha mjukt', en: 'Gentle stretch' },
+  { sv: 'Bara sitta still', en: 'Just sit still' },
+  { sv: 'Koppla av från skärmar', en: 'Unplug from screens' },
+  { sv: 'Kvällspromenad', en: 'Evening walk' },
+  { sv: 'Läs några sidor', en: 'Read a few pages' },
+  { sv: 'Ta en promenad', en: 'Take a walk' },
+  { sv: 'Drick ett glas vatten', en: 'Drink a glass of water' },
+  { sv: 'Stretcha kroppen', en: 'Stretch your body' },
+  { sv: 'Ring en vän', en: 'Call a friend' },
+  { sv: 'Lyssna på musik', en: 'Listen to music' },
+  { sv: 'Meditera i 5 min', en: 'Meditate for 5 min' },
+  { sv: 'Skriv ner tankar', en: 'Write down thoughts' },
+  { sv: 'Paus', en: 'Break' }
+];
+
+function translateKnownPhrase(value: string, from: Language, to: Language) {
+  if (from === to) return value;
+  const pair = TRANSLATABLE_PHRASES.find((item) => item[from] === value);
+  return pair ? pair[to] : value;
+}
+
+function getDefaultBreakType(language: Language) {
+  return language === 'sv' ? 'Kaffe eller te' : 'Coffee or tea';
+}
+
+function getInitialBreaks(language: Language): Break[] {
+  return [
+    { time: '10:45', message: language === 'sv' ? 'En kort promenad?' : 'A short walk?', active: true },
+    { time: '13:00', message: language === 'sv' ? 'Lunch utan skärm' : 'Screen-free lunch', active: false },
+    { time: '15:30', message: language === 'sv' ? 'Tre djupa andetag' : 'Three deep breaths', active: false }
+  ];
+}
+
 export default function App() {
+  const [language, setLanguage] = useState<Language>(() => {
+    const savedLanguage = localStorage.getItem('language');
+    return savedLanguage === 'en' ? 'en' : 'sv';
+  });
   const [currentScreen, setCurrentScreen] = useState<Screen>('onboarding1');
-  const [profile, setProfile] = useState<UserProfile>({
+  const [profile, setProfile] = useState<UserProfile>(() => ({
     name: '',
     activity: '',
-    breakType: 'Kaffe eller te',
+    breakType: getDefaultBreakType(language),
     suggestedFrequency: 3
-  });
-  const [breaks, setBreaks] = useState<Break[]>([
-    { time: '10:45', message: 'En kort promenad?', active: true },
-    { time: '13:00', message: 'Lunch utan skärm', active: false },
-    { time: '15:30', message: 'Tre djupa andetag', active: false }
-  ]);
+  }));
+  const [breaks, setBreaks] = useState<Break[]>(() => getInitialBreaks(language));
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [history, setHistory] = useState<{ time: string, message: string }[]>([]);
   const [completedBreaks, setCompletedBreaks] = useState<{ timestamp: string, message: string, duration: number }[]>([]);
 
-  const updateBreaks = (activity: string, breakType: string) => {
-    const breakSuggestions: Record<string, string[]> = {
-      'office': ['En kort promenad?', 'Stretch vid skrivbordet', 'Titta ut genom fönstret'],
-      'student': ['Rörelse mellan studierna', 'Lunch utan skärm', 'Frisk luft en stund'],
-      'creative': ['Vila ögonen', 'Kaffe och reflektion', 'Skissa något annat'],
-      'physical': ['Drick vatten', 'Sitt ner en stund', 'Stretcha mjukt'],
-      'home': ['Gå ut en stund', 'Kaffe eller te', 'Bara sitta still'],
-      'evening': ['Koppla av från skärmar', 'Kvällspromenad', 'Läs några sidor']
-    };
-
-    const suggestions = breakSuggestions[activity] || breakSuggestions['home'];
+  const updateBreaks = (activity: string, selectedLanguage: Language) => {
+    const suggestions = (BREAK_SUGGESTIONS[activity] || BREAK_SUGGESTIONS.home)[selectedLanguage];
     const times = activity === 'office' || activity === 'student' 
       ? ['10:30', '13:00', '15:30', '17:00'] 
       : ['10:00', '14:00', '18:00', '21:00'];
@@ -57,6 +134,34 @@ export default function App() {
     }));
 
     setBreaks(newBreaks);
+  };
+
+  const handleLanguageChange = (nextLanguage: Language) => {
+    if (nextLanguage === language) {
+      return;
+    }
+
+    setProfile((prev) => ({
+      ...prev,
+      breakType: translateKnownPhrase(prev.breakType, language, nextLanguage)
+    }));
+
+    setBreaks((prev) => prev.map((breakItem) => ({
+      ...breakItem,
+      message: translateKnownPhrase(breakItem.message, language, nextLanguage)
+    })));
+
+    setHistory((prev) => prev.map((item) => ({
+      ...item,
+      message: translateKnownPhrase(item.message, language, nextLanguage)
+    })));
+
+    setCompletedBreaks((prev) => prev.map((item) => ({
+      ...item,
+      message: translateKnownPhrase(item.message, language, nextLanguage)
+    })));
+
+    setLanguage(nextLanguage);
   };
 
   useEffect(() => {
@@ -84,6 +189,10 @@ export default function App() {
   }, [profile]);
 
   useEffect(() => {
+    localStorage.setItem('language', language);
+  }, [language]);
+
+  useEffect(() => {
     localStorage.setItem('breaks', JSON.stringify(breaks));
   }, [breaks]);
 
@@ -99,17 +208,34 @@ export default function App() {
     <div className="min-h-screen bg-gradient-to-br from-[#F5F3EF] via-[#E8E4DC] to-[#D4CFC3] p-0 sm:px-6 sm:py-8 lg:px-8 lg:py-10">
       <div className="mx-auto grid w-full max-w-6xl gap-0 sm:gap-6 lg:grid-cols-[minmax(260px,1fr)_minmax(420px,560px)] lg:items-stretch">
         <aside className="hidden lg:flex lg:flex-col lg:justify-center lg:pr-6">
-          <h1 className="mb-3 text-5xl leading-tight font-light text-[#2C2C2A]">Ta en stund</h1>
+          <h1 className="mb-3 text-5xl leading-tight font-light text-[#2C2C2A]">
+            {language === 'sv' ? 'Ta en stund' : 'Take a Moment'}
+          </h1>
           <p className="max-w-md text-lg leading-relaxed font-light text-[#2C2C2A]/60">
-            En app som hjalper dig skapa lugna, hallbara pauser under dagen. Allt sparas lokalt sa du snabbt kan komma tillbaka.
+            {language === 'sv'
+              ? 'En app som hjälper dig skapa lugna, hållbara pauser under dagen. Allt sparas lokalt så du snabbt kan komma tillbaka.'
+              : 'An app that helps you create calm, sustainable breaks throughout your day. Everything is saved locally so you can jump right back in.'}
           </p>
         </aside>
 
         <div className="relative h-[100dvh] max-h-[920px] overflow-hidden bg-[#FAFAF8] shadow-2xl sm:rounded-[34px] sm:border sm:border-white/40 lg:h-[820px]">
+          <div className="absolute top-3 right-3 z-40">
+            <select
+              value={language}
+              onChange={(e) => handleLanguageChange(e.target.value as Language)}
+              aria-label={language === 'sv' ? 'Välj språk' : 'Choose language'}
+              className="rounded-full border border-[#E8E4DC] bg-white px-3 py-1.5 text-xs sm:text-sm font-light text-[#2C2C2A] shadow-sm focus:outline-none"
+            >
+              <option value="sv">Svenska</option>
+              <option value="en">English</option>
+            </select>
+          </div>
+
           <AnimatePresence mode="wait">
             {currentScreen === 'onboarding1' && (
               <Onboarding1 
                 key="onboarding1"
+                language={language}
                 profile={profile}
                 setProfile={setProfile}
                 onNext={() => setCurrentScreen('onboarding2')} 
@@ -118,6 +244,7 @@ export default function App() {
             {currentScreen === 'onboarding2' && (
               <Onboarding2 
                 key="onboarding2"
+                language={language}
                 profile={profile}
                 setProfile={setProfile}
                 onBack={() => setCurrentScreen('onboarding1')}
@@ -127,11 +254,12 @@ export default function App() {
             {currentScreen === 'onboarding3' && (
               <Onboarding3 
                 key="onboarding3"
+                language={language}
                 profile={profile}
                 setProfile={setProfile}
                 onBack={() => setCurrentScreen('onboarding2')}
                 onNext={() => {
-                  updateBreaks(profile.activity, profile.breakType);
+                  updateBreaks(profile.activity, language);
                   setCurrentScreen('home');
                 }} 
               />
@@ -139,6 +267,7 @@ export default function App() {
             {currentScreen === 'home' && (
               <HomeScreen 
                 key="home"
+                language={language}
                 profile={profile}
                 breaks={breaks}
                 completedBreaks={completedBreaks}
@@ -155,12 +284,14 @@ export default function App() {
             {currentScreen === 'break' && (
               <BreakScreen 
                 key="break"
-                message={breaks.find(b => b.active)?.message || 'Paus'}
+                language={language}
+                message={breaks.find(b => b.active)?.message || (language === 'sv' ? 'Paus' : 'Break')}
                 onComplete={(duration) => {
                   const now = new Date();
                   const timeString = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
-                  setHistory([...history, { time: timeString, message: breaks.find(b => b.active)?.message || 'Paus' }]);
-                  setCompletedBreaks([...completedBreaks, { timestamp: now.toISOString(), message: breaks.find(b => b.active)?.message || 'Paus', duration }]);
+                  const activeMessage = breaks.find((b) => b.active)?.message || (language === 'sv' ? 'Paus' : 'Break');
+                  setHistory([...history, { time: timeString, message: activeMessage }]);
+                  setCompletedBreaks([...completedBreaks, { timestamp: now.toISOString(), message: activeMessage, duration }]);
                   setCurrentScreen('home');
                 }} 
                 onCancel={() => setCurrentScreen('home')}
@@ -169,6 +300,7 @@ export default function App() {
             {currentScreen === 'create' && (
               <CreateBreakScreen 
                 key="create"
+                language={language}
                 breaks={breaks}
                 setBreaks={setBreaks}
                 onBack={() => setCurrentScreen('home')} 
@@ -177,6 +309,7 @@ export default function App() {
             {currentScreen === 'edit' && editingIndex !== null && (
               <EditBreakScreen 
                 key="edit"
+                language={language}
                 breakItem={breaks[editingIndex]}
                 onSave={(updatedBreak) => {
                   const newBreaks = [...breaks];
@@ -195,6 +328,7 @@ export default function App() {
             {currentScreen === 'history' && (
               <HistoryScreen 
                 key="history"
+                language={language}
                 completedBreaks={completedBreaks}
                 onBack={() => setCurrentScreen('home')} 
               />
@@ -208,14 +342,10 @@ export default function App() {
               setProfile({
                 name: '',
                 activity: '',
-                breakType: 'Kaffe eller te',
+                breakType: getDefaultBreakType(language),
                 suggestedFrequency: 3
               });
-              setBreaks([
-                { time: '10:45', message: 'En kort promenad?', active: true },
-                { time: '13:00', message: 'Lunch utan skärm', active: false },
-                { time: '15:30', message: 'Tre djupa andetag', active: false }
-              ]);
+              setBreaks(getInitialBreaks(language));
               setHistory([]);
               setCompletedBreaks([]);
             }}
@@ -229,7 +359,9 @@ export default function App() {
 }
 
 // Onboarding Screen 1 - Name
-function Onboarding1({ profile, setProfile, onNext }: any) {
+function Onboarding1({ language, profile, setProfile, onNext }: any) {
+  const isSv = language === 'sv';
+
   return (
     <motion.div
       initial={{ opacity: 0, x: 20 }}
@@ -249,27 +381,31 @@ function Onboarding1({ profile, setProfile, onNext }: any) {
 
       <div className="flex-1 px-6 sm:px-8">
         <div className="mb-4 sm:mb-6">
-          <p className="text-xs sm:text-[13px] font-light text-[#C5D4C0] uppercase tracking-wider mb-2 sm:mb-3">Steg 1 av 3</p>
+          <p className="text-xs sm:text-[13px] font-light text-[#C5D4C0] uppercase tracking-wider mb-2 sm:mb-3">
+            {isSv ? 'Steg 1 av 3' : 'Step 1 of 3'}
+          </p>
           <div className="w-12 sm:w-16 h-12 sm:h-16 rounded-full bg-[#C5D4C0]/20 flex items-center justify-center mb-4 sm:mb-6">
             <div className="w-6 sm:w-8 h-6 sm:h-8 rounded-full bg-[#C5D4C0]/40" />
           </div>
         </div>
         <h1 className="text-2xl sm:text-[32px] leading-[32px] sm:leading-[40px] text-[#2C2C2A] font-light mb-3 sm:mb-4">
-          Hej där!
+          {isSv ? 'Hej där!' : 'Hi there!'}
         </h1>
         <p className="text-sm sm:text-[18px] leading-[22px] sm:leading-[28px] text-[#2C2C2A]/60 font-light mb-8 sm:mb-12">
-          Jag hjälper dig att komma ihåg att ta pauser som passar just ditt liv. Låt oss börja enkelt.
+          {isSv
+            ? 'Jag hjälper dig att komma ihåg att ta pauser som passar just ditt liv. Låt oss börja enkelt.'
+            : 'I will help you remember to take breaks that fit your day. Let us start simple.'}
         </p>
 
         <div>
           <label className="text-sm sm:text-[15px] font-light text-[#2C2C2A]/50 mb-2 sm:mb-3 block">
-            Vad heter du?
+            {isSv ? 'Vad heter du?' : 'What is your name?'}
           </label>
           <input
             type="text"
             value={profile.name}
             onChange={(e) => setProfile({ ...profile, name: e.target.value })}
-            placeholder="Ditt namn"
+            placeholder={isSv ? 'Ditt namn' : 'Your name'}
             className="w-full py-3 sm:py-4 px-4 sm:px-6 bg-white border-2 border-[#E8E4DC] rounded-3xl text-sm sm:text-[17px] font-light text-[#2C2C2A] placeholder:text-[#2C2C2A]/30 focus:outline-none focus:border-[#C5D4C0] transition-colors"
           />
         </div>
@@ -281,7 +417,7 @@ function Onboarding1({ profile, setProfile, onNext }: any) {
           disabled={!profile.name.trim()}
           className="w-full py-3 sm:py-5 bg-[#2C2C2A] text-[#FAFAF8] rounded-full text-sm sm:text-[17px] font-light disabled:opacity-30 transition-opacity"
         >
-          Fortsätt
+          {isSv ? 'Fortsätt' : 'Continue'}
         </button>
       </div>
     </motion.div>
@@ -289,27 +425,19 @@ function Onboarding1({ profile, setProfile, onNext }: any) {
 }
 
 // Onboarding Screen 2 - Activity Type
-function Onboarding2({ profile, setProfile, onBack, onNext }: any) {
+function Onboarding2({ language, profile, setProfile, onBack, onNext }: any) {
+  const isSv = language === 'sv';
+
   const activities = [
-    { id: 'office', label: 'Kontorsarbete', emoji: '💼', desc: 'Mycket skärmtid' },
-    { id: 'student', label: 'Studier', emoji: '📚', desc: 'Lära och fokusera' },
-    { id: 'creative', label: 'Kreativt arbete', emoji: '🎨', desc: 'Design, musik, konst' },
-    { id: 'physical', label: 'Fysiskt arbete', emoji: '🏃', desc: 'Mycket i rörelse' },
-    { id: 'home', label: 'Hemma', emoji: '🏡', desc: 'Vård, fritid, vila' },
-    { id: 'evening', label: 'Kvällstid', emoji: '🌙', desc: 'Efter jobbet' }
+    { id: 'office', label: isSv ? 'Kontorsarbete' : 'Office work', emoji: '💼', desc: isSv ? 'Mycket skärmtid' : 'A lot of screen time' },
+    { id: 'student', label: isSv ? 'Studier' : 'Studying', emoji: '📚', desc: isSv ? 'Lära och fokusera' : 'Learning and focus' },
+    { id: 'creative', label: isSv ? 'Kreativt arbete' : 'Creative work', emoji: '🎨', desc: isSv ? 'Design, musik, konst' : 'Design, music, art' },
+    { id: 'physical', label: isSv ? 'Fysiskt arbete' : 'Physical work', emoji: '🏃', desc: isSv ? 'Mycket i rörelse' : 'Mostly active' },
+    { id: 'home', label: isSv ? 'Hemma' : 'At home', emoji: '🏡', desc: isSv ? 'Vård, fritid, vila' : 'Care, hobbies, rest' },
+    { id: 'evening', label: isSv ? 'Kvällstid' : 'Evening time', emoji: '🌙', desc: isSv ? 'Efter jobbet' : 'After work' }
   ];
 
-  const getRecommendation = (activityId: string) => {
-    const recommendations: Record<string, number> = {
-      'office': 4,
-      'student': 4,
-      'creative': 3,
-      'physical': 3,
-      'home': 2,
-      'evening': 2
-    };
-    return recommendations[activityId] || 3;
-  };
+  const getRecommendation = (activityId: string) => ACTIVITY_RECOMMENDATIONS[activityId] || 3;
 
   const handleSelect = (activityId: string) => {
     setProfile({ 
@@ -344,13 +472,15 @@ function Onboarding2({ profile, setProfile, onBack, onNext }: any) {
 
       <div className="flex-1 px-6 sm:px-8 overflow-y-auto">
         <div className="mb-4 sm:mb-6">
-          <p className="text-xs sm:text-[13px] font-light text-[#C5D4C0] uppercase tracking-wider">Steg 2 av 3</p>
+          <p className="text-xs sm:text-[13px] font-light text-[#C5D4C0] uppercase tracking-wider">
+            {isSv ? 'Steg 2 av 3' : 'Step 2 of 3'}
+          </p>
         </div>
         <h1 className="text-xl sm:text-[28px] leading-[28px] sm:leading-[36px] text-[#2C2C2A] font-light mb-2 sm:mb-3">
-          Hur ser dina dagar ut?
+          {isSv ? 'Hur ser dina dagar ut?' : 'What do your days look like?'}
         </h1>
         <p className="text-sm sm:text-[16px] leading-[20px] sm:leading-[24px] text-[#2C2C2A]/50 font-light mb-6 sm:mb-8">
-          Jag anpassar pauserna efter vad du gör.
+          {isSv ? 'Jag anpassar pauserna efter vad du gör.' : 'I adjust your breaks based on your routine.'}
         </p>
 
         <div className="space-y-2 sm:space-y-3 pb-6">
@@ -380,7 +510,7 @@ function Onboarding2({ profile, setProfile, onBack, onNext }: any) {
           disabled={!profile.activity}
           className="w-full py-3 sm:py-5 bg-[#2C2C2A] text-[#FAFAF8] rounded-full text-sm sm:text-[17px] font-light disabled:opacity-30"
         >
-          Nästa
+          {isSv ? 'Nästa' : 'Next'}
         </button>
       </div>
     </motion.div>
@@ -388,21 +518,23 @@ function Onboarding2({ profile, setProfile, onBack, onNext }: any) {
 }
 
 // Onboarding Screen 3 - Break Type
-function Onboarding3({ profile, setProfile, onBack, onNext }: any) {
+function Onboarding3({ language, profile, setProfile, onBack, onNext }: any) {
+  const isSv = language === 'sv';
+
   const options = [
-    { id: 'walk', label: 'Gå ut en stund', emoji: '🌿' },
-    { id: 'coffee', label: 'Kaffe eller te', emoji: '☕' },
-    { id: 'breathe', label: 'Andas och stretcha', emoji: '🧘' },
-    { id: 'rest', label: 'Vila ögonen', emoji: '😌' }
+    { id: 'walk', label: isSv ? 'Gå ut en stund' : 'Step outside for a bit', emoji: '🌿' },
+    { id: 'coffee', label: isSv ? 'Kaffe eller te' : 'Coffee or tea', emoji: '☕' },
+    { id: 'breathe', label: isSv ? 'Andas och stretcha' : 'Breathe and stretch', emoji: '🧘' },
+    { id: 'rest', label: isSv ? 'Vila ögonen' : 'Rest your eyes', emoji: '😌' }
   ];
 
   const activityNames: Record<string, string> = {
-    'office': 'kontorsarbete',
-    'student': 'studier',
-    'creative': 'kreativa arbete',
-    'physical': 'fysiska arbete',
-    'home': 'tid hemma',
-    'evening': 'kvällstid'
+    office: isSv ? 'kontorsarbete' : 'office work',
+    student: isSv ? 'studier' : 'studying',
+    creative: isSv ? 'kreativa arbete' : 'creative work',
+    physical: isSv ? 'fysiska arbete' : 'physical work',
+    home: isSv ? 'tid hemma' : 'time at home',
+    evening: isSv ? 'kvällstid' : 'evening time'
   };
 
   return (
@@ -430,13 +562,21 @@ function Onboarding3({ profile, setProfile, onBack, onNext }: any) {
 
       <div className="flex-1 px-6 sm:px-8">
         <div className="mb-4 sm:mb-6">
-          <p className="text-xs sm:text-[13px] font-light text-[#C5D4C0] uppercase tracking-wider">Steg 3 av 3</p>
+          <p className="text-xs sm:text-[13px] font-light text-[#C5D4C0] uppercase tracking-wider">
+            {isSv ? 'Steg 3 av 3' : 'Step 3 of 3'}
+          </p>
         </div>
         <h1 className="text-xl sm:text-[28px] leading-[28px] sm:leading-[36px] text-[#2C2C2A] font-light mb-2 sm:mb-3">
-          Vad hjälper dig mest att ladda om?
+          {isSv ? 'Vad hjälper dig mest att ladda om?' : 'What helps you recharge most?'}
         </h1>
         <p className="text-sm sm:text-[16px] leading-[20px] sm:leading-[24px] text-[#2C2C2A]/50 font-light mb-6 sm:mb-8">
-          Baserat på ditt {activityNames[profile.activity] || 'liv'} rekommenderar jag <span className="text-[#2C2C2A] font-normal">{profile.suggestedFrequency} pauser om dagen</span>.
+          {isSv ? 'Baserat på ditt ' : 'Based on your '}
+          {activityNames[profile.activity] || (isSv ? 'liv' : 'routine')}
+          {isSv ? ' rekommenderar jag ' : ', I recommend '}
+          <span className="text-[#2C2C2A] font-normal">
+            {profile.suggestedFrequency} {isSv ? 'pauser om dagen' : 'breaks per day'}
+          </span>
+          .
         </p>
 
         <div className="space-y-2 sm:space-y-3">
@@ -462,7 +602,7 @@ function Onboarding3({ profile, setProfile, onBack, onNext }: any) {
           onClick={onNext}
           className="w-full py-3 sm:py-5 bg-[#2C2C2A] text-[#FAFAF8] rounded-full text-sm sm:text-[17px] font-light"
         >
-          Skapa mina pauser
+          {isSv ? 'Skapa mina pauser' : 'Create my breaks'}
         </button>
       </div>
     </motion.div>
@@ -470,13 +610,14 @@ function Onboarding3({ profile, setProfile, onBack, onNext }: any) {
 }
 
 // Home Screen
-function HomeScreen({ profile, breaks, completedBreaks, onBreakClick, onCreateClick, onEditClick, onPauseClick, onHistoryClick }: any) {
+function HomeScreen({ language, profile, breaks, completedBreaks, onBreakClick, onCreateClick, onEditClick, onPauseClick, onHistoryClick }: any) {
+  const isSv = language === 'sv';
   const firstName = profile.name.split(' ')[0];
   const greeting = () => {
     const hour = new Date().getHours();
-    if (hour < 10) return 'God morgon';
-    if (hour < 17) return 'Hej';
-    return 'God kväll';
+    if (hour < 10) return isSv ? 'God morgon' : 'Good morning';
+    if (hour < 17) return isSv ? 'Hej' : 'Hello';
+    return isSv ? 'God kväll' : 'Good evening';
   };
 
   const getTodayCompletedCount = () => {
@@ -525,7 +666,7 @@ function HomeScreen({ profile, breaks, completedBreaks, onBreakClick, onCreateCl
       <div className="px-6 sm:px-8 pt-3 sm:pt-4 pb-6 sm:pb-8 flex items-start justify-between gap-3">
         <div>
           <p className="text-xs sm:text-[15px] font-light text-[#2C2C2A]/40 mb-1 sm:mb-2">{greeting()},</p>
-          <h1 className="text-2xl sm:text-[32px] leading-[32px] sm:leading-[40px] text-[#2C2C2A] font-light">{firstName || 'vän'}</h1>
+          <h1 className="text-2xl sm:text-[32px] leading-[32px] sm:leading-[40px] text-[#2C2C2A] font-light">{firstName || (isSv ? 'vän' : 'friend')}</h1>
         </div>
         <button 
           onClick={onPauseClick}
@@ -537,13 +678,13 @@ function HomeScreen({ profile, breaks, completedBreaks, onBreakClick, onCreateCl
 
       <div className="flex-1 px-6 sm:px-8 pb-4 sm:pb-6 overflow-y-auto">
         <div className="flex items-center justify-between mb-3 sm:mb-4">
-          <p className="text-xs sm:text-[15px] font-light text-[#2C2C2A]/50">Dina stunder idag</p>
+          <p className="text-xs sm:text-[15px] font-light text-[#2C2C2A]/50">{isSv ? 'Dina stunder idag' : 'Your moments today'}</p>
           <button 
             onClick={onCreateClick}
             className="text-xs sm:text-[15px] font-light text-[#C5D4C0] flex items-center gap-1"
           >
             <Plus className="w-3 sm:w-4 h-3 sm:h-4" strokeWidth={2} />
-            Lägg till
+            {isSv ? 'Lägg till' : 'Add'}
           </button>
         </div>
         
@@ -569,7 +710,7 @@ function HomeScreen({ profile, breaks, completedBreaks, onBreakClick, onCreateCl
                 <div className="flex-1 text-left min-w-0">
                   {isNext && (
                     <div className="text-xs sm:text-[13px] font-light text-[#C5D4C0] mb-1 uppercase tracking-wide">
-                      Nästa
+                      {isSv ? 'Nästa' : 'Next'}
                     </div>
                   )}
                   <div className="text-xs sm:text-[15px] font-light text-[#2C2C2A]/50 mb-0.5 sm:mb-1">
@@ -581,8 +722,12 @@ function HomeScreen({ profile, breaks, completedBreaks, onBreakClick, onCreateCl
                   {isNext && minutesLeft !== null && (
                     <div className="text-xs sm:text-[14px] font-light text-[#2C2C2A]/40 mt-1 sm:mt-2">
                       {minutesLeft < 60 
-                        ? `${minutesLeft} ${minutesLeft === 1 ? 'minut' : 'minuter'} kvar`
-                        : `${Math.floor(minutesLeft / 60)} ${Math.floor(minutesLeft / 60) === 1 ? 'timme' : 'timmar'} kvar`
+                        ? isSv
+                          ? `${minutesLeft} ${minutesLeft === 1 ? 'minut' : 'minuter'} kvar`
+                          : `${minutesLeft} ${minutesLeft === 1 ? 'minute' : 'minutes'} left`
+                        : isSv
+                          ? `${Math.floor(minutesLeft / 60)} ${Math.floor(minutesLeft / 60) === 1 ? 'timme' : 'timmar'} kvar`
+                          : `${Math.floor(minutesLeft / 60)} ${Math.floor(minutesLeft / 60) === 1 ? 'hour' : 'hours'} left`
                       }
                     </div>
                   )}
@@ -594,7 +739,9 @@ function HomeScreen({ profile, breaks, completedBreaks, onBreakClick, onCreateCl
 
         {nextBreak !== null && (
           <p className="text-xs sm:text-[14px] font-light text-[#2C2C2A]/30 mt-4 sm:mt-6 text-center italic">
-            Tryck på nästa paus för att ta den nu, eller tryck på andra pauser för att redigera
+            {isSv
+              ? 'Tryck på nästa paus för att ta den nu, eller tryck på andra pauser för att redigera'
+              : 'Tap the next break to take it now, or tap other breaks to edit them'}
           </p>
         )}
       </div>
@@ -620,21 +767,22 @@ function HomeScreen({ profile, breaks, completedBreaks, onBreakClick, onCreateCl
 }
 
 // Create Break Screen
-function CreateBreakScreen({ breaks, setBreaks, onBack }: any) {
+function CreateBreakScreen({ language, breaks, setBreaks, onBack }: any) {
+  const isSv = language === 'sv';
   const [time, setTime] = useState('');
   const [message, setMessage] = useState('');
   const [selectedHour, setSelectedHour] = useState('10');
   const [selectedMinute, setSelectedMinute] = useState('00');
 
   const suggestions = [
-    'Ta en promenad',
-    'Drick ett glas vatten',
-    'Stretcha kroppen',
-    'Ring en vän',
-    'Läs några sidor',
-    'Lyssna på musik',
-    'Meditera i 5 min',
-    'Skriv ner tankar'
+    isSv ? 'Ta en promenad' : 'Take a walk',
+    isSv ? 'Drick ett glas vatten' : 'Drink a glass of water',
+    isSv ? 'Stretcha kroppen' : 'Stretch your body',
+    isSv ? 'Ring en vän' : 'Call a friend',
+    isSv ? 'Läs några sidor' : 'Read a few pages',
+    isSv ? 'Lyssna på musik' : 'Listen to music',
+    isSv ? 'Meditera i 5 min' : 'Meditate for 5 min',
+    isSv ? 'Skriv ner tankar' : 'Write down thoughts'
   ];
 
   const hours = Array.from({ length: 24 }, (_, i) => i.toString().padStart(2, '0'));
@@ -662,20 +810,22 @@ function CreateBreakScreen({ breaks, setBreaks, onBack }: any) {
         <button onClick={onBack} className="flex items-center justify-center w-8 sm:w-10 h-8 sm:h-10 -ml-2">
           <X className="w-4 sm:w-5 h-4 sm:h-5 text-[#2C2C2A]" strokeWidth={1.5} />
         </button>
-        <h2 className="text-sm sm:text-[17px] font-light text-[#2C2C2A]">Ny paus</h2>
+        <h2 className="text-sm sm:text-[17px] font-light text-[#2C2C2A]">{isSv ? 'Ny paus' : 'New break'}</h2>
         <div className="w-8 sm:w-10" />
       </div>
 
       <div className="flex-1 px-6 sm:px-8 overflow-y-auto">
         <div className="bg-[#C5D4C0]/10 rounded-3xl p-4 sm:p-5 mb-6 sm:mb-8">
           <p className="text-xs sm:text-[15px] leading-[18px] sm:leading-[24px] font-light text-[#2C2C2A]/70">
-            Skapa en paus som återkommer varje dag vid samma tid. Du kan alltid redigera eller ta bort den senare.
+            {isSv
+              ? 'Skapa en paus som återkommer varje dag vid samma tid. Du kan alltid redigera eller ta bort den senare.'
+              : 'Create a break that repeats daily at the same time. You can always edit or remove it later.'}
           </p>
         </div>
 
         <div className="mb-6 sm:mb-8">
           <label className="text-xs sm:text-[15px] font-light text-[#2C2C2A]/50 mb-3 sm:mb-4 block">
-            När vill du bli påmind?
+            {isSv ? 'När vill du bli påmind?' : 'When should we remind you?'}
           </label>
           <div className="flex gap-2 sm:gap-3 items-center">
             <select
@@ -702,19 +852,19 @@ function CreateBreakScreen({ breaks, setBreaks, onBack }: any) {
 
         <div className="mb-4 sm:mb-6">
           <label className="text-xs sm:text-[15px] font-light text-[#2C2C2A]/50 mb-2 sm:mb-3 block">
-            Vad vill du göra?
+            {isSv ? 'Vad vill du göra?' : 'What would you like to do?'}
           </label>
           <input
             type="text"
             value={message}
             onChange={(e) => setMessage(e.target.value)}
-            placeholder="t.ex. Ta en promenad"
+            placeholder={isSv ? 't.ex. Ta en promenad' : 'e.g. Take a walk'}
             className="w-full py-3 sm:py-4 px-4 sm:px-6 bg-white border-2 border-[#E8E4DC] rounded-3xl text-sm sm:text-[17px] font-light text-[#2C2C2A] placeholder:text-[#2C2C2A]/30 focus:outline-none focus:border-[#C5D4C0] transition-colors"
           />
         </div>
 
         <div>
-          <p className="text-xs sm:text-[15px] font-light text-[#2C2C2A]/50 mb-2 sm:mb-3">Förslag</p>
+          <p className="text-xs sm:text-[15px] font-light text-[#2C2C2A]/50 mb-2 sm:mb-3">{isSv ? 'Förslag' : 'Suggestions'}</p>
           <div className="flex flex-wrap gap-1.5 sm:gap-2">
             {suggestions.map((suggestion) => (
               <button
@@ -735,7 +885,7 @@ function CreateBreakScreen({ breaks, setBreaks, onBack }: any) {
           disabled={!message}
           className="w-full py-3 sm:py-5 bg-[#2C2C2A] text-[#FAFAF8] rounded-full text-sm sm:text-[17px] font-light disabled:opacity-30"
         >
-          Skapa daglig paus
+          {isSv ? 'Skapa daglig paus' : 'Create daily break'}
         </button>
       </div>
     </motion.div>
@@ -743,7 +893,8 @@ function CreateBreakScreen({ breaks, setBreaks, onBack }: any) {
 }
 
 // Edit Break Screen
-function EditBreakScreen({ breakItem, onSave, onDelete, onBack }: any) {
+function EditBreakScreen({ language, breakItem, onSave, onDelete, onBack }: any) {
+  const isSv = language === 'sv';
   const [selectedHour, setSelectedHour] = useState(breakItem.time.split(':')[0]);
   const [selectedMinute, setSelectedMinute] = useState(breakItem.time.split(':')[1]);
   const [message, setMessage] = useState(breakItem.message);
@@ -752,14 +903,14 @@ function EditBreakScreen({ breakItem, onSave, onDelete, onBack }: any) {
   const minutes = ['00', '15', '30', '45'];
 
   const suggestions = [
-    'Ta en promenad',
-    'Drick ett glas vatten',
-    'Stretcha kroppen',
-    'Ring en vän',
-    'Läs några sidor',
-    'Lyssna på musik',
-    'Meditera i 5 min',
-    'Skriv ner tankar'
+    isSv ? 'Ta en promenad' : 'Take a walk',
+    isSv ? 'Drick ett glas vatten' : 'Drink a glass of water',
+    isSv ? 'Stretcha kroppen' : 'Stretch your body',
+    isSv ? 'Ring en vän' : 'Call a friend',
+    isSv ? 'Läs några sidor' : 'Read a few pages',
+    isSv ? 'Lyssna på musik' : 'Listen to music',
+    isSv ? 'Meditera i 5 min' : 'Meditate for 5 min',
+    isSv ? 'Skriv ner tankar' : 'Write down thoughts'
   ];
 
   const handleSave = () => {
@@ -782,14 +933,14 @@ function EditBreakScreen({ breakItem, onSave, onDelete, onBack }: any) {
         <button onClick={onBack} className="flex items-center justify-center w-8 sm:w-10 h-8 sm:h-10 -ml-2">
           <X className="w-4 sm:w-5 h-4 sm:h-5 text-[#2C2C2A]" strokeWidth={1.5} />
         </button>
-        <h2 className="text-sm sm:text-[17px] font-light text-[#2C2C2A]">Redigera paus</h2>
+        <h2 className="text-sm sm:text-[17px] font-light text-[#2C2C2A]">{isSv ? 'Redigera paus' : 'Edit break'}</h2>
         <div className="w-8 sm:w-10" />
       </div>
 
       <div className="flex-1 px-6 sm:px-8 overflow-y-auto">
         <div className="mb-6 sm:mb-8">
           <label className="text-xs sm:text-[15px] font-light text-[#2C2C2A]/50 mb-3 sm:mb-4 block">
-            Tid
+            {isSv ? 'Tid' : 'Time'}
           </label>
           <div className="flex gap-2 sm:gap-3 items-center">
             <select
@@ -816,19 +967,19 @@ function EditBreakScreen({ breakItem, onSave, onDelete, onBack }: any) {
 
         <div className="mb-4 sm:mb-6">
           <label className="text-xs sm:text-[15px] font-light text-[#2C2C2A]/50 mb-2 sm:mb-3 block">
-            Vad vill du göra?
+            {isSv ? 'Vad vill du göra?' : 'What would you like to do?'}
           </label>
           <input
             type="text"
             value={message}
             onChange={(e) => setMessage(e.target.value)}
-            placeholder="t.ex. Ta en promenad"
+            placeholder={isSv ? 't.ex. Ta en promenad' : 'e.g. Take a walk'}
             className="w-full py-3 sm:py-4 px-4 sm:px-6 bg-white border-2 border-[#E8E4DC] rounded-3xl text-sm sm:text-[17px] font-light text-[#2C2C2A] placeholder:text-[#2C2C2A]/30 focus:outline-none focus:border-[#C5D4C0] transition-colors"
           />
         </div>
 
         <div className="mb-6 sm:mb-8">
-          <p className="text-xs sm:text-[15px] font-light text-[#2C2C2A]/50 mb-2 sm:mb-3">Förslag</p>
+          <p className="text-xs sm:text-[15px] font-light text-[#2C2C2A]/50 mb-2 sm:mb-3">{isSv ? 'Förslag' : 'Suggestions'}</p>
           <div className="flex flex-wrap gap-1.5 sm:gap-2">
             {suggestions.map((suggestion) => (
               <button
@@ -846,7 +997,7 @@ function EditBreakScreen({ breakItem, onSave, onDelete, onBack }: any) {
           onClick={onDelete}
           className="w-full py-3 sm:py-4 text-red-400 text-xs sm:text-[15px] font-light hover:text-red-500 transition-colors"
         >
-          Ta bort denna paus
+          {isSv ? 'Ta bort denna paus' : 'Delete this break'}
         </button>
       </div>
 
@@ -856,7 +1007,7 @@ function EditBreakScreen({ breakItem, onSave, onDelete, onBack }: any) {
           disabled={!message}
           className="w-full py-3 sm:py-5 bg-[#2C2C2A] text-[#FAFAF8] rounded-full text-sm sm:text-[17px] font-light disabled:opacity-30"
         >
-          Spara ändringar
+          {isSv ? 'Spara ändringar' : 'Save changes'}
         </button>
       </div>
     </motion.div>
@@ -864,7 +1015,8 @@ function EditBreakScreen({ breakItem, onSave, onDelete, onBack }: any) {
 }
 
 // Break Screen
-function BreakScreen({ message, onComplete, onCancel }: { message: string; onComplete: (duration: number) => void; onCancel: () => void }) {
+function BreakScreen({ language, message, onComplete, onCancel }: { language: Language; message: string; onComplete: (duration: number) => void; onCancel: () => void }) {
+  const isSv = language === 'sv';
   const [isActive, setIsActive] = useState(false);
   const [seconds, setSeconds] = useState(0);
   const targetDuration = 5 * 60; // 5 minutes in seconds
@@ -930,7 +1082,7 @@ function BreakScreen({ message, onComplete, onCancel }: { message: string; onCom
                 {formatTime(seconds)}
               </div>
               <div className="text-xs sm:text-[14px] font-light text-[#2C2C2A]/40">
-                {isActive ? 'Andas lugnt' : 'Redo när du är'}
+                {isActive ? (isSv ? 'Andas lugnt' : 'Breathe calmly') : (isSv ? 'Redo när du är' : 'Ready when you are')}
               </div>
             </div>
           </div>
@@ -941,7 +1093,7 @@ function BreakScreen({ message, onComplete, onCancel }: { message: string; onCom
             {message}
           </h1>
           <p className="text-xs sm:text-[16px] leading-[18px] sm:leading-[24px] text-[#2C2C2A]/50 font-light">
-            Ta den tid du behöver
+            {isSv ? 'Ta den tid du behöver' : 'Take the time you need'}
           </p>
         </div>
       </div>
@@ -954,13 +1106,13 @@ function BreakScreen({ message, onComplete, onCancel }: { message: string; onCom
               className="w-full py-3 sm:py-5 bg-[#2C2C2A] text-[#FAFAF8] rounded-full text-sm sm:text-[17px] font-light flex items-center justify-center gap-2"
             >
               <Play className="w-4 sm:w-5 h-4 sm:h-5" strokeWidth={1.5} fill="currentColor" />
-              Starta
+              {isSv ? 'Starta' : 'Start'}
             </button>
             <button 
               onClick={onCancel}
               className="w-full py-2 sm:py-3 text-[#2C2C2A]/40 text-xs sm:text-[15px] font-light"
             >
-              Avbryt
+              {isSv ? 'Avbryt' : 'Cancel'}
             </button>
           </>
         ) : (
@@ -973,13 +1125,13 @@ function BreakScreen({ message, onComplete, onCancel }: { message: string; onCom
               className="w-full py-3 sm:py-5 bg-[#C5D4C0] text-[#2C2C2A] rounded-full text-sm sm:text-[17px] font-light flex items-center justify-center gap-2"
             >
               <Check className="w-4 sm:w-5 h-4 sm:h-5" strokeWidth={2} />
-              Klar
+              {isSv ? 'Klar' : 'Done'}
             </button>
             <button 
               onClick={onCancel}
               className="w-full py-2 sm:py-3 text-[#2C2C2A]/40 text-xs sm:text-[15px] font-light"
             >
-              Hoppa över
+              {isSv ? 'Hoppa över' : 'Skip'}
             </button>
           </>
         )}
@@ -989,7 +1141,8 @@ function BreakScreen({ message, onComplete, onCancel }: { message: string; onCom
 }
 
 // History Screen
-function HistoryScreen({ completedBreaks, onBack }: any) {
+function HistoryScreen({ language, completedBreaks, onBack }: any) {
+  const isSv = language === 'sv';
   const getTodayBreaks = () => {
     const today = new Date().toDateString();
     return completedBreaks.filter((b: CompletedBreak) => 
@@ -1019,7 +1172,7 @@ function HistoryScreen({ completedBreaks, onBack }: any) {
   const groupByDate = () => {
     const groups: Record<string, CompletedBreak[]> = {};
     completedBreaks.forEach((b: CompletedBreak) => {
-      const dateKey = new Date(b.timestamp).toLocaleDateString('sv-SE', { 
+      const dateKey = new Date(b.timestamp).toLocaleDateString(isSv ? 'sv-SE' : 'en-GB', {
         day: 'numeric', 
         month: 'short' 
       });
@@ -1044,7 +1197,7 @@ function HistoryScreen({ completedBreaks, onBack }: any) {
         <button onClick={onBack} className="flex items-center justify-center w-8 sm:w-10 h-8 sm:h-10 -ml-2">
           <ArrowLeft className="w-4 sm:w-5 h-4 sm:h-5 text-[#2C2C2A]" strokeWidth={1.5} />
         </button>
-        <h2 className="text-sm sm:text-[17px] font-light text-[#2C2C2A]">Dina stunder</h2>
+        <h2 className="text-sm sm:text-[17px] font-light text-[#2C2C2A]">{isSv ? 'Dina stunder' : 'Your moments'}</h2>
         <div className="w-8 sm:w-10" />
       </div>
 
@@ -1055,10 +1208,10 @@ function HistoryScreen({ completedBreaks, onBack }: any) {
               <Clock className="w-8 sm:w-10 h-8 sm:h-10 text-[#2C2C2A]/20" strokeWidth={1.5} />
             </div>
             <h3 className="text-lg sm:text-[20px] font-light text-[#2C2C2A] mb-1 sm:mb-2">
-              Inga stunder än
+              {isSv ? 'Inga stunder än' : 'No moments yet'}
             </h3>
             <p className="text-xs sm:text-[15px] font-light text-[#2C2C2A]/50 max-w-[250px]">
-              När du tar dina pauser kommer de visas här
+              {isSv ? 'När du tar dina pauser kommer de visas här' : 'When you complete breaks, they will appear here'}
             </p>
           </div>
         ) : (
@@ -1066,25 +1219,25 @@ function HistoryScreen({ completedBreaks, onBack }: any) {
             <div className="grid grid-cols-2 gap-2 sm:gap-3 mb-6 sm:mb-8">
               <div className="bg-white rounded-3xl p-3 sm:p-5">
                 <div className="text-xs sm:text-[13px] font-light text-[#2C2C2A]/50 uppercase tracking-wide mb-1 sm:mb-2">
-                  Idag
+                  {isSv ? 'Idag' : 'Today'}
                 </div>
                 <div className="text-2xl sm:text-[32px] font-light text-[#2C2C2A] mb-0.5 sm:mb-1">
                   {todayBreaks.length}
                 </div>
                 <div className="text-xs sm:text-[14px] font-light text-[#2C2C2A]/50">
-                  {todayMinutes} min
+                  {todayMinutes} {isSv ? 'min' : 'min'}
                 </div>
               </div>
               
               <div className="bg-white rounded-3xl p-3 sm:p-5">
                 <div className="text-xs sm:text-[13px] font-light text-[#2C2C2A]/50 uppercase tracking-wide mb-1 sm:mb-2">
-                  7 dagar
+                  {isSv ? '7 dagar' : '7 days'}
                 </div>
                 <div className="text-2xl sm:text-[32px] font-light text-[#2C2C2A] mb-0.5 sm:mb-1">
                   {weekBreaks.length}
                 </div>
                 <div className="text-xs sm:text-[14px] font-light text-[#2C2C2A]/50">
-                  {weekMinutes} min
+                  {weekMinutes} {isSv ? 'min' : 'min'}
                 </div>
               </div>
             </div>
@@ -1109,10 +1262,10 @@ function HistoryScreen({ completedBreaks, onBack }: any) {
                             {b.message}
                           </div>
                           <div className="text-xs sm:text-[13px] font-light text-[#2C2C2A]/40">
-                            {new Date(b.timestamp).toLocaleTimeString('sv-SE', { 
+                            {new Date(b.timestamp).toLocaleTimeString(isSv ? 'sv-SE' : 'en-GB', {
                               hour: '2-digit', 
                               minute: '2-digit' 
-                            })} • {Math.floor(b.duration / 60)} min
+                            })} • {Math.floor(b.duration / 60)} {isSv ? 'min' : 'min'}
                           </div>
                         </div>
                       </div>
